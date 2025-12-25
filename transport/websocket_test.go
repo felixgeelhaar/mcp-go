@@ -75,9 +75,12 @@ func TestWebSocket_Integration(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Connect WebSocket client
-		conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:18765/", nil)
+		conn, httpResp, err := websocket.DefaultDialer.Dial("ws://localhost:18765/", nil)
 		if err != nil {
 			t.Fatalf("failed to connect: %v", err)
+		}
+		if httpResp != nil && httpResp.Body != nil {
+			_ = httpResp.Body.Close()
 		}
 		defer conn.Close()
 
@@ -163,10 +166,13 @@ func TestWebSocket_Integration(t *testing.T) {
 			go func() {
 				defer wg.Done()
 
-				conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:18766/", nil)
+				conn, httpResp, err := websocket.DefaultDialer.Dial("ws://localhost:18766/", nil)
 				if err != nil {
 					t.Errorf("failed to connect: %v", err)
 					return
+				}
+				if httpResp != nil && httpResp.Body != nil {
+					_ = httpResp.Body.Close()
 				}
 				defer conn.Close()
 
@@ -222,9 +228,12 @@ func TestWebSocket_Integration(t *testing.T) {
 
 		time.Sleep(100 * time.Millisecond)
 
-		conn, _, err := websocket.DefaultDialer.Dial("ws://localhost:18767/", nil)
+		conn, httpResp, err := websocket.DefaultDialer.Dial("ws://localhost:18767/", nil)
 		if err != nil {
 			t.Fatalf("failed to connect: %v", err)
+		}
+		if httpResp != nil && httpResp.Body != nil {
+			_ = httpResp.Body.Close()
 		}
 		defer conn.Close()
 

@@ -46,6 +46,7 @@ type Prompt struct {
 	description string
 	arguments   []PromptArgument
 	handler     PromptHandler
+	annotations *PromptAnnotations
 }
 
 // PromptInfo represents metadata about a registered prompt.
@@ -53,6 +54,7 @@ type PromptInfo struct {
 	Name        string
 	Description string
 	Arguments   []PromptArgument
+	Annotations *PromptAnnotations
 }
 
 // PromptBuilder provides a fluent API for building prompts.

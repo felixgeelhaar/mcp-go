@@ -34,6 +34,7 @@ type ToolInfo struct {
 	Name        string
 	Description string
 	InputSchema any
+	Annotations *ToolAnnotations
 }
 
 // Option configures a Server.
@@ -101,6 +102,7 @@ func (s *Server) Tools() []ToolInfo {
 			Name:        t.name,
 			Description: t.description,
 			InputSchema: t.inputSchema,
+			Annotations: t.annotations,
 		})
 	}
 	return result
@@ -161,6 +163,7 @@ func (s *Server) Resources() []ResourceInfo {
 			Name:        r.name,
 			Description: r.description,
 			MimeType:    r.mimeType,
+			Annotations: r.annotations,
 		})
 	}
 	return result
@@ -220,6 +223,7 @@ func (s *Server) Prompts() []PromptInfo {
 			Name:        p.name,
 			Description: p.description,
 			Arguments:   p.arguments,
+			Annotations: p.annotations,
 		})
 	}
 	return result

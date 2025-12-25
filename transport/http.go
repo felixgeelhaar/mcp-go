@@ -14,9 +14,12 @@ import (
 
 // HTTP implements an HTTP transport with SSE support for MCP.
 type HTTP struct {
-	addr         string
-	readTimeout  time.Duration
-	writeTimeout time.Duration
+	addr            string
+	readTimeout     time.Duration
+	writeTimeout    time.Duration
+	shutdownTimeout time.Duration
+	drainDelay      time.Duration
+	corsConfig      *CORSConfig
 
 	mu         sync.RWMutex
 	listenAddr string
@@ -47,10 +50,11 @@ func WithWriteTimeout(d time.Duration) HTTPOption {
 // NewHTTP creates a new HTTP transport.
 func NewHTTP(addr string, opts ...HTTPOption) *HTTP {
 	h := &HTTP{
-		addr:         addr,
-		readTimeout:  30 * time.Second,
-		writeTimeout: 30 * time.Second,
-		sseClients:   make(map[string]chan []byte),
+		addr:            addr,
+		readTimeout:     30 * time.Second,
+		writeTimeout:    30 * time.Second,
+		shutdownTimeout: 30 * time.Second,
+		sseClients:      make(map[string]chan []byte),
 	}
 
 	for _, opt := range opts {
@@ -100,7 +104,12 @@ func (h *HTTP) Serve(ctx context.Context, handler Handler) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// Wait for drain delay if configured
+		if h.drainDelay > 0 {
+			time.Sleep(h.drainDelay)
+		}
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), h.shutdownTimeout)
 		defer cancel()
 		if err := h.server.Shutdown(shutdownCtx); err != nil {
 			return err
@@ -131,6 +140,11 @@ func (h *HTTP) createHandler(handler Handler) http.Handler {
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		h.handleMCP(w, r, handler)
 	})
+
+	// Apply CORS if configured
+	if h.corsConfig != nil {
+		return CORSHandler(*h.corsConfig, mux)
+	}
 
 	return mux
 }

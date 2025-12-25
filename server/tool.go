@@ -20,6 +20,7 @@ type Tool struct {
 	validateInput bool
 	handler       any
 	hasContext    bool
+	annotations   *ToolAnnotations
 }
 
 // ToolBuilder provides a fluent API for building tools.

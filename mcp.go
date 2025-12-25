@@ -69,6 +69,17 @@ type ProgressToken = server.ProgressToken
 type Progress = server.Progress
 type ProgressReporter = server.ProgressReporter
 
+// Annotation types for tools, resources, and prompts
+type ToolAnnotations = server.ToolAnnotations
+type ResourceAnnotations = server.ResourceAnnotations
+type PromptAnnotations = server.PromptAnnotations
+
+// Helper functions for annotation values
+var (
+	Bool  = server.Bool
+	Float = server.Float
+)
+
 // ProgressFromContext returns the progress reporter from context.
 // Use this in tool handlers to report progress for long-running operations.
 //
@@ -115,8 +126,48 @@ const (
 	MB = middleware.MB
 )
 
+// Auth re-exports for convenience.
+type Identity = middleware.Identity
+type AuthOption = middleware.AuthOption
+type Authenticator = middleware.Authenticator
+
+var (
+	Auth                     = middleware.Auth
+	WithAuthLogger           = middleware.WithAuthLogger
+	WithAuthSkipMethods      = middleware.WithAuthSkipMethods
+	WithAuthRealm            = middleware.WithAuthRealm
+	WithAuthErrorMessage     = middleware.WithAuthErrorMessage
+	APIKeyAuthenticator      = middleware.APIKeyAuthenticator
+	BearerTokenAuthenticator = middleware.BearerTokenAuthenticator
+	StaticAPIKeys            = middleware.StaticAPIKeys
+	StaticTokens             = middleware.StaticTokens
+	ChainAuthenticators      = middleware.ChainAuthenticators
+	IdentityFromContext      = middleware.IdentityFromContext
+	ContextWithIdentity      = middleware.ContextWithIdentity
+)
+
 // HTTPOption configures the HTTP transport.
 type HTTPOption = transport.HTTPOption
+
+// CORS configuration for HTTP transports.
+type CORSConfig = transport.CORSConfig
+
+var (
+	DefaultCORSConfig = transport.DefaultCORSConfig
+	WithCORS          = transport.WithCORS
+	WithDefaultCORS   = transport.WithDefaultCORS
+)
+
+// Shutdown configuration for HTTP transports.
+type ShutdownConfig = transport.ShutdownConfig
+type ShutdownManager = transport.ShutdownManager
+
+var (
+	DefaultShutdownConfig  = transport.DefaultShutdownConfig
+	NewShutdownManager     = transport.NewShutdownManager
+	WithShutdownTimeout    = transport.WithShutdownTimeout
+	WithShutdownDrainDelay = transport.WithShutdownDrainDelay
+)
 
 // ServeOption configures how the server is run.
 type ServeOption func(*serveOptions)
@@ -345,11 +396,15 @@ func (h *requestHandler) handleToolsList(req *protocol.Request) (*protocol.Respo
 
 	toolList := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
-		toolList = append(toolList, map[string]any{
+		item := map[string]any{
 			"name":        t.Name,
 			"description": t.Description,
 			"inputSchema": t.InputSchema,
-		})
+		}
+		if t.Annotations != nil {
+			item["annotations"] = t.Annotations
+		}
+		toolList = append(toolList, item)
 	}
 
 	result := map[string]any{
@@ -423,6 +478,9 @@ func (h *requestHandler) handleResourcesList(req *protocol.Request) (*protocol.R
 		}
 		if r.MimeType != "" {
 			item["mimeType"] = r.MimeType
+		}
+		if r.Annotations != nil {
+			item["annotations"] = r.Annotations
 		}
 		resourceList = append(resourceList, item)
 	}
@@ -501,6 +559,9 @@ func (h *requestHandler) handlePromptsList(req *protocol.Request) (*protocol.Res
 				args = append(args, argItem)
 			}
 			item["arguments"] = args
+		}
+		if p.Annotations != nil {
+			item["annotations"] = p.Annotations
 		}
 		promptList = append(promptList, item)
 	}

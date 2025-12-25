@@ -25,6 +25,7 @@ type Resource struct {
 	description string
 	mimeType    string
 	handler     ResourceHandler
+	annotations *ResourceAnnotations
 
 	// Compiled regex for URI matching
 	uriRegex   *regexp.Regexp
@@ -37,6 +38,7 @@ type ResourceInfo struct {
 	Name        string
 	Description string
 	MimeType    string
+	Annotations *ResourceAnnotations
 }
 
 // ResourceBuilder provides a fluent API for building resources.
