@@ -1,0 +1,57 @@
+name: Feature Request
+description: Suggest a new feature for mcp-go
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature! Please fill out the form below.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve? Is this related to a frustration?
+      placeholder: I'm always frustrated when...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like.
+      placeholder: I would like to be able to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example Usage
+      description: If applicable, show how you'd use this feature.
+      render: go
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe any alternative solutions or features you've considered.
+
+  - type: dropdown
+    id: mcp-spec
+    attributes:
+      label: MCP Specification
+      description: Is this feature part of the MCP specification?
+      options:
+        - "Yes - part of MCP spec"
+        - "No - extension/convenience feature"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context, screenshots, or references here.
