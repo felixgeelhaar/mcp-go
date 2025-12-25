@@ -1,0 +1,466 @@
+// Package mcp provides a framework for building MCP (Model Context Protocol) servers.
+//
+// mcp-go aims to be the "Gin framework" for MCP servers, providing:
+//   - Typed handlers with automatic JSON Schema generation
+//   - Gin-style middleware chains
+//   - Pluggable transports (stdio, HTTP+SSE)
+//   - Production-ready defaults
+//
+// Basic usage:
+//
+//	srv := mcp.NewServer(mcp.ServerInfo{
+//	    Name:    "my-server",
+//	    Version: "1.0.0",
+//	})
+//
+//	type SearchInput struct {
+//	    Query string `json:"query" jsonschema:"required"`
+//	}
+//
+//	srv.Tool("search").
+//	    Description("Search for items").
+//	    Handler(func(ctx context.Context, input SearchInput) ([]string, error) {
+//	        return []string{"result1", "result2"}, nil
+//	    })
+//
+//	mcp.ServeStdio(ctx, srv)
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/felixgeelhaar/mcp-go/middleware"
+	"github.com/felixgeelhaar/mcp-go/protocol"
+	"github.com/felixgeelhaar/mcp-go/server"
+	"github.com/felixgeelhaar/mcp-go/transport"
+)
+
+// Re-export core types for convenience
+
+// ServerInfo contains server metadata exposed to clients.
+type ServerInfo = server.Info
+
+// Capabilities declares what features the server supports.
+type Capabilities = server.Capabilities
+
+// Server is the MCP server instance.
+type Server = server.Server
+
+// Option configures a Server.
+type Option = server.Option
+
+// Resource types
+type ResourceContent = server.ResourceContent
+type ResourceInfo = server.ResourceInfo
+
+// Prompt types
+type PromptResult = server.PromptResult
+type PromptMessage = server.PromptMessage
+type PromptArgument = server.PromptArgument
+type PromptInfo = server.PromptInfo
+type TextContent = server.TextContent
+type ImageContent = server.ImageContent
+
+// Middleware types
+type Middleware = middleware.Middleware
+type MiddlewareHandlerFunc = middleware.HandlerFunc
+type Logger = middleware.Logger
+type LogField = middleware.Field
+
+// HTTPOption configures the HTTP transport.
+type HTTPOption = transport.HTTPOption
+
+// ServeOption configures how the server is run.
+type ServeOption func(*serveOptions)
+
+type serveOptions struct {
+	middleware []Middleware
+	logger     Logger
+}
+
+// WithMiddleware adds middleware to the request handling chain.
+func WithMiddleware(m ...Middleware) ServeOption {
+	return func(o *serveOptions) {
+		o.middleware = append(o.middleware, m...)
+	}
+}
+
+// WithLogger sets the logger for the default middleware stack.
+func WithLogger(l Logger) ServeOption {
+	return func(o *serveOptions) {
+		o.logger = l
+	}
+}
+
+// NewServer creates a new MCP server with the given info and options.
+func NewServer(info ServerInfo, opts ...Option) *Server {
+	return server.New(info, opts...)
+}
+
+// ServeStdio runs the server using stdio transport.
+// This blocks until the context is cancelled or an error occurs.
+func ServeStdio(ctx context.Context, srv *Server, opts ...ServeOption) error {
+	t := transport.NewStdio()
+	handler := newRequestHandler(srv, opts...)
+	return t.Serve(ctx, handler)
+}
+
+// ServeHTTP runs the server using HTTP transport with SSE support.
+// This blocks until the context is cancelled or an error occurs.
+func ServeHTTP(ctx context.Context, srv *Server, addr string, opts ...HTTPOption) error {
+	t := transport.NewHTTP(addr, opts...)
+	handler := newRequestHandler(srv)
+	return t.Serve(ctx, handler)
+}
+
+// ServeHTTPWithMiddleware runs the server using HTTP transport with middleware support.
+func ServeHTTPWithMiddleware(ctx context.Context, srv *Server, addr string, httpOpts []HTTPOption, serveOpts ...ServeOption) error {
+	t := transport.NewHTTP(addr, httpOpts...)
+	handler := newRequestHandler(srv, serveOpts...)
+	return t.Serve(ctx, handler)
+}
+
+// WithReadTimeout sets the read timeout for HTTP requests.
+func WithReadTimeout(d time.Duration) HTTPOption {
+	return transport.WithReadTimeout(d)
+}
+
+// WithWriteTimeout sets the write timeout for HTTP responses.
+func WithWriteTimeout(d time.Duration) HTTPOption {
+	return transport.WithWriteTimeout(d)
+}
+
+// Middleware re-exports
+
+// Chain composes multiple middleware into a single middleware.
+func Chain(middlewares ...Middleware) Middleware {
+	return middleware.Chain(middlewares...)
+}
+
+// Recover returns middleware that catches panics and converts them to internal errors.
+func Recover() Middleware {
+	return middleware.Recover()
+}
+
+// RecoverWithHandler returns middleware that catches panics and calls the provided handler.
+func RecoverWithHandler(handler func(ctx context.Context, req *protocol.Request, panicVal any) (*protocol.Response, error)) Middleware {
+	return middleware.RecoverWithHandler(handler)
+}
+
+// Timeout returns middleware that enforces a request deadline.
+func Timeout(d time.Duration) Middleware {
+	return middleware.Timeout(d)
+}
+
+// RequestID returns middleware that injects a unique request ID into the context.
+func RequestID() Middleware {
+	return middleware.RequestID()
+}
+
+// RequestIDFromContext returns the request ID from the context, or empty string if not set.
+func RequestIDFromContext(ctx context.Context) string {
+	return middleware.RequestIDFromContext(ctx)
+}
+
+// Logging returns middleware that logs request details.
+func Logging(logger Logger) Middleware {
+	return middleware.Logging(logger)
+}
+
+// DefaultMiddleware returns the recommended production middleware stack.
+func DefaultMiddleware(logger Logger) []Middleware {
+	return middleware.DefaultStack(logger)
+}
+
+// DefaultMiddlewareWithTimeout returns the default stack with a timeout middleware.
+func DefaultMiddlewareWithTimeout(logger Logger, timeout time.Duration) []Middleware {
+	return middleware.DefaultStackWithTimeout(logger, timeout)
+}
+
+// LogF creates a new log field with the given key and value.
+func LogF(key string, value any) LogField {
+	return middleware.F(key, value)
+}
+
+// requestHandler adapts Server to transport.Handler
+type requestHandler struct {
+	srv        *Server
+	handleFunc middleware.HandlerFunc
+}
+
+func newRequestHandler(srv *Server, opts ...ServeOption) *requestHandler {
+	options := &serveOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	h := &requestHandler{srv: srv}
+
+	// Build the handler function
+	baseHandler := middleware.HandlerFunc(h.handle)
+
+	// Apply middleware if any
+	if len(options.middleware) > 0 {
+		h.handleFunc = middleware.Chain(options.middleware...)(baseHandler)
+	} else {
+		h.handleFunc = baseHandler
+	}
+
+	return h
+}
+
+func (h *requestHandler) HandleRequest(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	return h.handleFunc(ctx, req)
+}
+
+func (h *requestHandler) handle(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	switch req.Method {
+	case protocol.MethodInitialize:
+		return h.handleInitialize(req)
+	case protocol.MethodToolsList:
+		return h.handleToolsList(req)
+	case protocol.MethodToolsCall:
+		return h.handleToolsCall(ctx, req)
+	case protocol.MethodResourcesList:
+		return h.handleResourcesList(req)
+	case protocol.MethodResourcesRead:
+		return h.handleResourcesRead(ctx, req)
+	case protocol.MethodPromptsList:
+		return h.handlePromptsList(req)
+	case protocol.MethodPromptsGet:
+		return h.handlePromptsGet(ctx, req)
+	case protocol.MethodPing:
+		return h.handlePing(req)
+	default:
+		return nil, protocol.NewMethodNotFound(req.Method)
+	}
+}
+
+func (h *requestHandler) handleInitialize(req *protocol.Request) (*protocol.Response, error) {
+	manifest := h.srv.Manifest()
+
+	// Build capabilities based on what's registered
+	capabilities := make(map[string]any)
+
+	if manifest.Capabilities.Tools {
+		capabilities["tools"] = map[string]any{}
+	}
+	if manifest.Capabilities.Resources {
+		capabilities["resources"] = map[string]any{}
+	}
+	if manifest.Capabilities.Prompts {
+		capabilities["prompts"] = map[string]any{}
+	}
+
+	result := map[string]any{
+		"protocolVersion": manifest.ProtocolVersion,
+		"serverInfo": map[string]any{
+			"name":    manifest.Name,
+			"version": manifest.Version,
+		},
+		"capabilities": capabilities,
+	}
+
+	return protocol.NewResponse(req.ID, result), nil
+}
+
+func (h *requestHandler) handleToolsList(req *protocol.Request) (*protocol.Response, error) {
+	tools := h.srv.Tools()
+
+	toolList := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		toolList = append(toolList, map[string]any{
+			"name":        t.Name,
+			"description": t.Description,
+			"inputSchema": t.InputSchema,
+		})
+	}
+
+	result := map[string]any{
+		"tools": toolList,
+	}
+
+	return protocol.NewResponse(req.ID, result), nil
+}
+
+func (h *requestHandler) handleToolsCall(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	// Parse params
+	var params struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return nil, protocol.NewInvalidParams(err.Error())
+	}
+
+	// Get tool
+	tool, ok := h.srv.GetTool(params.Name)
+	if !ok {
+		return nil, protocol.NewNotFound("tool not found: " + params.Name)
+	}
+
+	// Execute tool
+	result, err := tool.Execute(ctx, params.Arguments)
+	if err != nil {
+		// Check if it's already an MCP error
+		if mcpErr, ok := err.(*protocol.Error); ok {
+			return nil, mcpErr
+		}
+		return nil, protocol.NewInternalError(err.Error())
+	}
+
+	// Format result
+	response := map[string]any{
+		"content": []map[string]any{
+			{
+				"type": "text",
+				"text": result,
+			},
+		},
+	}
+
+	return protocol.NewResponse(req.ID, response), nil
+}
+
+func (h *requestHandler) handleResourcesList(req *protocol.Request) (*protocol.Response, error) {
+	resources := h.srv.Resources()
+
+	resourceList := make([]map[string]any, 0, len(resources))
+	for _, r := range resources {
+		item := map[string]any{
+			"uri":  r.URITemplate,
+			"name": r.Name,
+		}
+		if r.Description != "" {
+			item["description"] = r.Description
+		}
+		if r.MimeType != "" {
+			item["mimeType"] = r.MimeType
+		}
+		resourceList = append(resourceList, item)
+	}
+
+	result := map[string]any{
+		"resources": resourceList,
+	}
+
+	return protocol.NewResponse(req.ID, result), nil
+}
+
+func (h *requestHandler) handleResourcesRead(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	// Parse params
+	var params struct {
+		URI string `json:"uri"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return nil, protocol.NewInvalidParams(err.Error())
+	}
+
+	// Find resource that matches the URI
+	resource, ok := h.srv.FindResourceForURI(params.URI)
+	if !ok {
+		return nil, protocol.NewNotFound("resource not found: " + params.URI)
+	}
+
+	// Read resource
+	content, err := resource.Read(ctx, params.URI)
+	if err != nil {
+		if mcpErr, ok := err.(*protocol.Error); ok {
+			return nil, mcpErr
+		}
+		return nil, protocol.NewInternalError(err.Error())
+	}
+
+	result := map[string]any{
+		"contents": []map[string]any{
+			{
+				"uri":      content.URI,
+				"mimeType": content.MimeType,
+				"text":     content.Text,
+			},
+		},
+	}
+
+	// Include blob if present
+	if content.Blob != "" {
+		result["contents"].([]map[string]any)[0]["blob"] = content.Blob
+	}
+
+	return protocol.NewResponse(req.ID, result), nil
+}
+
+func (h *requestHandler) handlePromptsList(req *protocol.Request) (*protocol.Response, error) {
+	prompts := h.srv.Prompts()
+
+	promptList := make([]map[string]any, 0, len(prompts))
+	for _, p := range prompts {
+		item := map[string]any{
+			"name": p.Name,
+		}
+		if p.Description != "" {
+			item["description"] = p.Description
+		}
+		if len(p.Arguments) > 0 {
+			args := make([]map[string]any, 0, len(p.Arguments))
+			for _, arg := range p.Arguments {
+				argItem := map[string]any{
+					"name":     arg.Name,
+					"required": arg.Required,
+				}
+				if arg.Description != "" {
+					argItem["description"] = arg.Description
+				}
+				args = append(args, argItem)
+			}
+			item["arguments"] = args
+		}
+		promptList = append(promptList, item)
+	}
+
+	result := map[string]any{
+		"prompts": promptList,
+	}
+
+	return protocol.NewResponse(req.ID, result), nil
+}
+
+func (h *requestHandler) handlePromptsGet(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	// Parse params
+	var params struct {
+		Name      string            `json:"name"`
+		Arguments map[string]string `json:"arguments"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return nil, protocol.NewInvalidParams(err.Error())
+	}
+
+	// Get prompt
+	prompt, ok := h.srv.GetPrompt(params.Name)
+	if !ok {
+		return nil, protocol.NewNotFound("prompt not found: " + params.Name)
+	}
+
+	// Execute prompt
+	result, err := prompt.Get(ctx, params.Arguments)
+	if err != nil {
+		if mcpErr, ok := err.(*protocol.Error); ok {
+			return nil, mcpErr
+		}
+		return nil, protocol.NewInvalidParams(err.Error())
+	}
+
+	response := map[string]any{
+		"messages": result.Messages,
+	}
+	if result.Description != "" {
+		response["description"] = result.Description
+	}
+
+	return protocol.NewResponse(req.ID, response), nil
+}
+
+func (h *requestHandler) handlePing(req *protocol.Request) (*protocol.Response, error) {
+	return protocol.NewResponse(req.ID, map[string]any{}), nil
+}
