@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"sync"
@@ -101,6 +102,35 @@ func (s *Stdio) Serve(ctx context.Context, handler Handler) error {
 	}
 }
 
+// SendNotification sends a JSON-RPC notification to the client.
+func (s *Stdio) SendNotification(method string, params any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	paramsData, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+
+	notif := Notification{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  paramsData,
+	}
+
+	data, err := json.Marshal(notif)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.out.Write(data)
+	if err != nil {
+		return err
+	}
+	_, err = s.out.Write([]byte("\n"))
+	return err
+}
+
 func (s *Stdio) handleLine(ctx context.Context, handler Handler, line string) {
 	// Parse request
 	var req protocol.Request
@@ -110,6 +140,9 @@ func (s *Stdio) handleLine(ctx context.Context, handler Handler, line string) {
 		s.writeResponse(resp)
 		return
 	}
+
+	// Attach notification sender to context for progress reporting
+	ctx = ContextWithNotificationSender(ctx, s)
 
 	// Handle request
 	resp, err := handler.HandleRequest(ctx, &req)
@@ -121,7 +154,8 @@ func (s *Stdio) handleLine(ctx context.Context, handler Handler, line string) {
 
 	// Handle handler errors
 	if err != nil {
-		if mcpErr, ok := err.(*protocol.Error); ok {
+		var mcpErr *protocol.Error
+		if errors.As(err, &mcpErr) {
 			resp = protocol.NewErrorResponse(req.ID, mcpErr)
 		} else {
 			resp = protocol.NewErrorResponse(req.ID, protocol.NewInternalError(err.Error()))
@@ -142,6 +176,6 @@ func (s *Stdio) writeResponse(resp *protocol.Response) {
 		return
 	}
 
-	s.out.Write(data)
-	s.out.Write([]byte("\n"))
+	_, _ = s.out.Write(data)
+	_, _ = s.out.Write([]byte("\n"))
 }

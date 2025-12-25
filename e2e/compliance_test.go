@@ -14,40 +14,6 @@ import (
 	"github.com/felixgeelhaar/mcp-go/protocol"
 )
 
-// testTransport simulates MCP communication for testing.
-type testTransport struct {
-	in  *bytes.Buffer
-	out *bytes.Buffer
-}
-
-func newTestTransport() *testTransport {
-	return &testTransport{
-		in:  new(bytes.Buffer),
-		out: new(bytes.Buffer),
-	}
-}
-
-func (t *testTransport) send(req *protocol.Request) error {
-	data, err := json.Marshal(req)
-	if err != nil {
-		return err
-	}
-	_, err = t.in.Write(append(data, '\n'))
-	return err
-}
-
-func (t *testTransport) receive() (*protocol.Response, error) {
-	line, err := t.out.ReadString('\n')
-	if err != nil {
-		return nil, err
-	}
-	var resp protocol.Response
-	if err := json.Unmarshal([]byte(line), &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
 // TestMCPCompliance_Initialize tests the initialize handshake.
 func TestMCPCompliance_Initialize(t *testing.T) {
 	srv := mcp.NewServer(mcp.ServerInfo{

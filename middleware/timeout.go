@@ -9,7 +9,7 @@ import (
 
 // Timeout returns middleware that enforces a request deadline.
 // If the handler does not complete within the specified duration,
-// the context is cancelled and context.DeadlineExceeded is returned.
+// the context is canceled and context.DeadlineExceeded is returned.
 func Timeout(d time.Duration) Middleware {
 	return func(next HandlerFunc) HandlerFunc {
 		return func(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {

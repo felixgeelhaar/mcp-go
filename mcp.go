@@ -29,6 +29,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/felixgeelhaar/mcp-go/middleware"
@@ -63,11 +64,56 @@ type PromptInfo = server.PromptInfo
 type TextContent = server.TextContent
 type ImageContent = server.ImageContent
 
+// Progress types for streaming tool responses
+type ProgressToken = server.ProgressToken
+type Progress = server.Progress
+type ProgressReporter = server.ProgressReporter
+
+// ProgressFromContext returns the progress reporter from context.
+// Use this in tool handlers to report progress for long-running operations.
+//
+// Example:
+//
+//	srv.Tool("process").Handler(func(ctx context.Context, input ProcessInput) (string, error) {
+//	    progress := mcp.ProgressFromContext(ctx)
+//	    total := 100.0
+//	    for i := 0; i < 100; i++ {
+//	        progress.Report(float64(i), &total)
+//	        // do work...
+//	    }
+//	    return "done", nil
+//	})
+var ProgressFromContext = server.ProgressFromContext
+
 // Middleware types
 type Middleware = middleware.Middleware
 type MiddlewareHandlerFunc = middleware.HandlerFunc
 type Logger = middleware.Logger
 type LogField = middleware.Field
+type RateLimitOption = middleware.RateLimitOption
+
+// RateLimit re-exports for convenience.
+var (
+	RateLimit            = middleware.RateLimit
+	RateLimitByMethod    = middleware.RateLimitByMethod
+	RateLimitByClient    = middleware.RateLimitByClient
+	WithRateLimitKeyFunc = middleware.WithRateLimitKeyFunc
+	WithRateLimitLogger  = middleware.WithRateLimitLogger
+)
+
+// SizeLimit re-exports for convenience.
+type SizeLimitOption = middleware.SizeLimitOption
+
+var (
+	SizeLimit           = middleware.SizeLimit
+	WithSizeLimitLogger = middleware.WithSizeLimitLogger
+)
+
+// Size limit presets.
+const (
+	KB = middleware.KB
+	MB = middleware.MB
+)
 
 // HTTPOption configures the HTTP transport.
 type HTTPOption = transport.HTTPOption
@@ -100,7 +146,7 @@ func NewServer(info ServerInfo, opts ...Option) *Server {
 }
 
 // ServeStdio runs the server using stdio transport.
-// This blocks until the context is cancelled or an error occurs.
+// This blocks until the context is canceled or an error occurs.
 func ServeStdio(ctx context.Context, srv *Server, opts ...ServeOption) error {
 	t := transport.NewStdio()
 	handler := newRequestHandler(srv, opts...)
@@ -108,7 +154,7 @@ func ServeStdio(ctx context.Context, srv *Server, opts ...ServeOption) error {
 }
 
 // ServeHTTP runs the server using HTTP transport with SSE support.
-// This blocks until the context is cancelled or an error occurs.
+// This blocks until the context is canceled or an error occurs.
 func ServeHTTP(ctx context.Context, srv *Server, addr string, opts ...HTTPOption) error {
 	t := transport.NewHTTP(addr, opts...)
 	handler := newRequestHandler(srv)
@@ -130,6 +176,34 @@ func WithReadTimeout(d time.Duration) HTTPOption {
 // WithWriteTimeout sets the write timeout for HTTP responses.
 func WithWriteTimeout(d time.Duration) HTTPOption {
 	return transport.WithWriteTimeout(d)
+}
+
+// WebSocketOption configures the WebSocket transport.
+type WebSocketOption = transport.WebSocketOption
+
+// ServeWebSocket runs the server using WebSocket transport.
+// This blocks until the context is canceled or an error occurs.
+func ServeWebSocket(ctx context.Context, srv *Server, addr string, opts ...WebSocketOption) error {
+	t := transport.NewWebSocket(addr, opts...)
+	handler := newRequestHandler(srv)
+	return t.Serve(ctx, handler)
+}
+
+// ServeWebSocketWithMiddleware runs the server using WebSocket transport with middleware support.
+func ServeWebSocketWithMiddleware(ctx context.Context, srv *Server, addr string, wsOpts []WebSocketOption, serveOpts ...ServeOption) error {
+	t := transport.NewWebSocket(addr, wsOpts...)
+	handler := newRequestHandler(srv, serveOpts...)
+	return t.Serve(ctx, handler)
+}
+
+// WithWebSocketReadTimeout sets the read timeout for WebSocket messages.
+func WithWebSocketReadTimeout(d time.Duration) WebSocketOption {
+	return transport.WithWebSocketReadTimeout(d)
+}
+
+// WithWebSocketWriteTimeout sets the write timeout for WebSocket messages.
+func WithWebSocketWriteTimeout(d time.Duration) WebSocketOption {
+	return transport.WithWebSocketWriteTimeout(d)
 }
 
 // Middleware re-exports
@@ -301,11 +375,22 @@ func (h *requestHandler) handleToolsCall(ctx context.Context, req *protocol.Requ
 		return nil, protocol.NewNotFound("tool not found: " + params.Name)
 	}
 
+	// Set up progress reporting if token is present
+	progressToken := server.ExtractProgressToken(req.Params)
+	if progressToken != "" {
+		if sender := transport.NotificationSenderFromContext(ctx); sender != nil {
+			// Adapt transport.NotificationSender to server.NotificationSender
+			reporter := server.NewProgressReporter(progressToken, &notificationAdapter{sender})
+			ctx = server.ContextWithProgress(ctx, reporter)
+		}
+	}
+
 	// Execute tool
 	result, err := tool.Execute(ctx, params.Arguments)
 	if err != nil {
 		// Check if it's already an MCP error
-		if mcpErr, ok := err.(*protocol.Error); ok {
+		var mcpErr *protocol.Error
+		if errors.As(err, &mcpErr) {
 			return nil, mcpErr
 		}
 		return nil, protocol.NewInternalError(err.Error())
@@ -367,7 +452,8 @@ func (h *requestHandler) handleResourcesRead(ctx context.Context, req *protocol.
 	// Read resource
 	content, err := resource.Read(ctx, params.URI)
 	if err != nil {
-		if mcpErr, ok := err.(*protocol.Error); ok {
+		var mcpErr *protocol.Error
+		if errors.As(err, &mcpErr) {
 			return nil, mcpErr
 		}
 		return nil, protocol.NewInternalError(err.Error())
@@ -445,7 +531,8 @@ func (h *requestHandler) handlePromptsGet(ctx context.Context, req *protocol.Req
 	// Execute prompt
 	result, err := prompt.Get(ctx, params.Arguments)
 	if err != nil {
-		if mcpErr, ok := err.(*protocol.Error); ok {
+		var mcpErr *protocol.Error
+		if errors.As(err, &mcpErr) {
 			return nil, mcpErr
 		}
 		return nil, protocol.NewInvalidParams(err.Error())
@@ -463,4 +550,13 @@ func (h *requestHandler) handlePromptsGet(ctx context.Context, req *protocol.Req
 
 func (h *requestHandler) handlePing(req *protocol.Request) (*protocol.Response, error) {
 	return protocol.NewResponse(req.ID, map[string]any{}), nil
+}
+
+// notificationAdapter adapts transport.NotificationSender to server.NotificationSender.
+type notificationAdapter struct {
+	sender transport.NotificationSender
+}
+
+func (a *notificationAdapter) SendNotification(method string, params any) error {
+	return a.sender.SendNotification(method, params)
 }

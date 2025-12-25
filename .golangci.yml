@@ -1,118 +1,84 @@
+version: "2"
+
 run:
   timeout: 5m
   modules-download-mode: readonly
 
 linters:
+  default: standard
   enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
     - bodyclose
     - dogsled
-    - dupl
     - errorlint
-    - exhaustive
-    - copyloopvar
-    - gochecknoinits
     - goconst
     - gocritic
     - gocyclo
-    - gofmt
-    - goimports
-    - goprintffuncname
     - gosec
     - misspell
     - nakedret
-    - noctx
-    - nolintlint
     - prealloc
     - predeclared
-    - revive
-    - rowserrcheck
-    - sqlclosecheck
-    - stylecheck
-    - tparallel
     - unconvert
     - unparam
     - whitespace
 
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
+  settings:
+    gocyclo:
+      min-complexity: 20
 
-  govet:
-    enable-all: true
+    goconst:
+      min-len: 3
+      min-occurrences: 3
 
-  gocyclo:
-    min-complexity: 15
+    misspell:
+      locale: US
 
-  dupl:
-    threshold: 100
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        - hugeParam
 
-  goconst:
-    min-len: 3
-    min-occurrences: 3
-
-  misspell:
-    locale: US
-
-  goimports:
-    local-prefixes: github.com/felixgeelhaar/mcp-go
-
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-      - performance
-    disabled-checks:
-      - hugeParam
-
-  revive:
+  exclusions:
+    presets:
+      - comments
+      - std-error-handling
     rules:
-      - name: blank-imports
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: dot-imports
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: exported
-      - name: if-return
-      - name: increment-decrement
-      - name: var-naming
-      - name: var-declaration
-      - name: package-comments
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: indent-error-flow
-      - name: errorf
-      - name: empty-block
-      - name: superfluous-else
-      - name: unused-parameter
-      - name: unreachable-code
-      - name: redefines-builtin-id
+      - path: _test\.go
+        linters:
+          - dupl
+          - goconst
+          - gosec
+          - noctx
+          - errcheck
+          - gocritic
+          - unparam
+          - gocyclo
+          - misspell
+          - errorlint
+
+      - path: examples/
+        linters:
+          - errcheck
+          - gosec
+          - gocritic
+          - errorlint
+
+      - path: e2e/
+        linters:
+          - errcheck
+          - errorlint
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/felixgeelhaar/mcp-go
 
 issues:
-  exclude-rules:
-    # Exclude some linters from running on tests files
-    - path: _test\.go
-      linters:
-        - dupl
-        - goconst
-        - gosec
-        - noctx
-
-    # Exclude some linters from examples
-    - path: examples/
-      linters:
-        - errcheck
-        - gosec
-
   max-issues-per-linter: 0
   max-same-issues: 0

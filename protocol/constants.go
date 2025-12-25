@@ -15,3 +15,8 @@ const (
 	MethodPromptsGet    = "prompts/get"
 	MethodPing          = "ping"
 )
+
+// MCP notification methods.
+const (
+	MethodProgress = "notifications/progress"
+)

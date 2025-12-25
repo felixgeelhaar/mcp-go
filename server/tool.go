@@ -12,12 +12,14 @@ import (
 
 // Tool represents a callable function exposed via MCP.
 type Tool struct {
-	name        string
-	description string
-	inputType   reflect.Type
-	inputSchema any
-	handler     any
-	hasContext  bool
+	name          string
+	description   string
+	inputType     reflect.Type
+	inputSchema   any
+	validatable   *schema.Schema
+	validateInput bool
+	handler       any
+	hasContext    bool
 }
 
 // ToolBuilder provides a fluent API for building tools.
@@ -33,6 +35,17 @@ func (b *ToolBuilder) Description(desc string) *ToolBuilder {
 		return b
 	}
 	b.tool.description = desc
+	return b
+}
+
+// ValidateInput enables runtime schema validation of tool inputs.
+// When enabled, inputs are validated against the JSON Schema before
+// the handler is called. Invalid inputs result in an InvalidParams error.
+func (b *ToolBuilder) ValidateInput() *ToolBuilder {
+	if b.err != nil {
+		return b
+	}
+	b.tool.validateInput = true
 	return b
 }
 
@@ -94,6 +107,7 @@ func (b *ToolBuilder) validateHandler(fn any) error {
 		return fmt.Errorf("failed to generate input schema: %w", err)
 	}
 	b.tool.inputSchema = inputSchema
+	b.tool.validatable = inputSchema // Store for validation
 
 	// Check outputs
 	if fnType.NumOut() != 2 {
@@ -111,6 +125,13 @@ func (b *ToolBuilder) validateHandler(fn any) error {
 
 // Execute runs the tool handler with the given JSON input.
 func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (any, error) {
+	// Validate input against schema if enabled
+	if t.validateInput && t.validatable != nil {
+		if err := t.validatable.Validate(input); err != nil {
+			return nil, protocol.NewInvalidParams(fmt.Sprintf("input validation failed: %v", err))
+		}
+	}
+
 	// Create input value
 	inputPtr := reflect.New(t.inputType)
 	if err := json.Unmarshal(input, inputPtr.Interface()); err != nil {
