@@ -18,7 +18,10 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         They accept typed input, execute logic, and return results.
       </p>
       <p><strong>Use tools for:</strong> API calls, calculations, file operations, database queries—anything the model needs to <em>do</em>.</p>
-      <pre><code>{`type CalculateInput struct {
+      <pre><code>{`// import "context"
+// import "fmt"
+
+type CalculateInput struct {
     Operation string  \`json:"operation" jsonschema:"required,enum=add|subtract|multiply|divide"\`
     A         float64 \`json:"a" jsonschema:"required"\`
     B         float64 \`json:"b" jsonschema:"required"\`
@@ -56,7 +59,10 @@ srv.Tool("calculate").
         something the model can <em>read</em>—files, database records, API responses.
       </p>
       <p><strong>Use resources for:</strong> Configuration, user data, documents, status information.</p>
-      <pre><code>{`srv.Resource("users://{id}").
+      <pre><code>{`// import "context"
+// import "encoding/json"
+
+srv.Resource("users://{id}").
     Name("User").
     Description("Get user by ID").
     MimeType("application/json").
@@ -88,7 +94,10 @@ srv.Tool("calculate").
         and provide reusable patterns for common tasks.
       </p>
       <p><strong>Use prompts for:</strong> Code review templates, summarization tasks, structured queries.</p>
-      <pre><code>{`srv.Prompt("code-review").
+      <pre><code>{`// import "context"
+// import "fmt"
+
+srv.Prompt("code-review").
     Description("Generate a code review prompt").
     Argument("language", "Programming language", true).
     Argument("focus", "Review focus: security, performance, or style", false).
