@@ -123,9 +123,6 @@ const navItems = [
     link.addEventListener('click', () => {
       if (isMenuOpen) {
         closeMenu();
-      } else {
-        // Ensure aria-expanded stays in sync even if somehow not open
-        toggle?.setAttribute('aria-expanded', 'false');
       }
     });
   });
