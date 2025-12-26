@@ -108,6 +108,7 @@ func main() {
 
 import (
     "context"
+    "fmt"
     "log"
     "time"
 
@@ -116,6 +117,39 @@ import (
 
 type GreetInput struct {
     Name string \`json:"name" jsonschema:"required"\`
+}
+
+// simpleLogger implements mcp.Logger for demonstration.
+type simpleLogger struct{}
+
+func (l *simpleLogger) Info(msg string, fields ...mcp.LogField) {
+    fmt.Printf("[INFO] %s %v\\n", msg, formatFields(fields))
+}
+
+func (l *simpleLogger) Error(msg string, fields ...mcp.LogField) {
+    fmt.Printf("[ERROR] %s %v\\n", msg, formatFields(fields))
+}
+
+func (l *simpleLogger) Debug(msg string, fields ...mcp.LogField) {
+    fmt.Printf("[DEBUG] %s %v\\n", msg, formatFields(fields))
+}
+
+func (l *simpleLogger) Warn(msg string, fields ...mcp.LogField) {
+    fmt.Printf("[WARN] %s %v\\n", msg, formatFields(fields))
+}
+
+func formatFields(fields []mcp.LogField) string {
+    if len(fields) == 0 {
+        return ""
+    }
+    result := "{"
+    for i, f := range fields {
+        if i > 0 {
+            result += ", "
+        }
+        result += fmt.Sprintf("%s=%v", f.Key, f.Value)
+    }
+    return result + "}"
 }
 
 func main() {
@@ -135,7 +169,7 @@ func main() {
     // - Request ID injection
     // - Timeout enforcement
     // - Structured logging
-    logger := &myLogger{}
+    logger := &simpleLogger{}
     middleware := mcp.DefaultMiddlewareWithTimeout(logger, 30*time.Second)
 
     if err := mcp.ServeStdio(context.Background(), srv, mcp.WithMiddleware(middleware...)); err != nil {
