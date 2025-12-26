@@ -35,23 +35,105 @@ const navItems = [
 <script>
   const toggle = document.querySelector('.menu-toggle');
   const nav = document.querySelector('.nav');
-  const header = document.querySelector('.header');
+
+  let isMenuOpen = false;
+  let focusableElements = [];
+  let firstFocusable = null;
+  let lastFocusable = null;
+
+  function updateFocusableElements() {
+    if (!nav) return;
+    const selectors = [
+      'a[href]',
+      'button:not([disabled])',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(',');
+    focusableElements = Array.from(nav.querySelectorAll(selectors))
+      .filter(el => !el.hasAttribute('disabled') && el.getAttribute('aria-hidden') !== 'true');
+    firstFocusable = focusableElements[0] || null;
+    lastFocusable = focusableElements[focusableElements.length - 1] || null;
+  }
+
+  function openMenu() {
+    if (!toggle || !nav) return;
+    isMenuOpen = true;
+    toggle.setAttribute('aria-expanded', 'true');
+    nav.classList.add('nav-open');
+    nav.setAttribute('aria-hidden', 'false');
+
+    updateFocusableElements();
+    if (firstFocusable) {
+      firstFocusable.focus();
+    } else {
+      toggle.focus();
+    }
+
+    document.addEventListener('keydown', handleKeyDown);
+  }
+
+  function closeMenu() {
+    if (!toggle || !nav) return;
+    isMenuOpen = false;
+    toggle.setAttribute('aria-expanded', 'false');
+    nav.classList.remove('nav-open');
+    nav.setAttribute('aria-hidden', 'true');
+
+    document.removeEventListener('keydown', handleKeyDown);
+    focusableElements = [];
+    firstFocusable = null;
+    lastFocusable = null;
+
+    toggle.focus();
+  }
+
+  function handleKeyDown(event) {
+    if (!isMenuOpen) return;
+
+    const { key, shiftKey } = event;
+
+    if (key === 'Escape' || key === 'Esc') {
+      event.preventDefault();
+      closeMenu();
+      return;
+    }
+
+    if (key === 'Tab' && focusableElements.length > 0) {
+      const activeElement = document.activeElement;
+
+      if (!shiftKey && activeElement === lastFocusable) {
+        event.preventDefault();
+        firstFocusable?.focus();
+      } else if (shiftKey && activeElement === firstFocusable) {
+        event.preventDefault();
+        lastFocusable?.focus();
+      }
+    }
+  }
 
   toggle?.addEventListener('click', () => {
-    const isExpanded = toggle.getAttribute('aria-expanded') === 'true';
-    toggle.setAttribute('aria-expanded', String(!isExpanded));
-    nav?.classList.toggle('nav-open');
-    header?.classList.toggle('menu-open');
+    if (isMenuOpen) {
+      closeMenu();
+    } else {
+      openMenu();
+    }
   });
 
   // Close menu when clicking a link
   nav?.querySelectorAll('.nav-link').forEach(link => {
     link.addEventListener('click', () => {
-      toggle?.setAttribute('aria-expanded', 'false');
-      nav?.classList.remove('nav-open');
-      header?.classList.remove('menu-open');
+      if (isMenuOpen) {
+        closeMenu();
+      } else {
+        // Ensure aria-expanded stays in sync even if somehow not open
+        toggle?.setAttribute('aria-expanded', 'false');
+      }
     });
   });
+
+  // Initialize aria-hidden on page load
+  if (nav) {
+    nav.setAttribute('aria-hidden', 'true');
+  }
 </script>
 
 <style>
@@ -184,6 +266,7 @@ const navItems = [
       opacity: 0;
       visibility: hidden;
       transition: opacity 0.2s ease, visibility 0.2s ease;
+      z-index: 100;
     }
 
     .nav-open {
