@@ -123,19 +123,33 @@ type GreetInput struct {
 type simpleLogger struct{}
 
 func (l *simpleLogger) Info(msg string, fields ...mcp.LogField) {
-    fmt.Printf("[INFO] %s\\n", msg)
+    fmt.Printf("[INFO] %s %v\\n", msg, formatFields(fields))
 }
 
 func (l *simpleLogger) Error(msg string, fields ...mcp.LogField) {
-    fmt.Printf("[ERROR] %s\\n", msg)
+    fmt.Printf("[ERROR] %s %v\\n", msg, formatFields(fields))
 }
 
 func (l *simpleLogger) Debug(msg string, fields ...mcp.LogField) {
-    fmt.Printf("[DEBUG] %s\\n", msg)
+    fmt.Printf("[DEBUG] %s %v\\n", msg, formatFields(fields))
 }
 
 func (l *simpleLogger) Warn(msg string, fields ...mcp.LogField) {
-    fmt.Printf("[WARN] %s\\n", msg)
+    fmt.Printf("[WARN] %s %v\\n", msg, formatFields(fields))
+}
+
+func formatFields(fields []mcp.LogField) string {
+    if len(fields) == 0 {
+        return ""
+    }
+    result := "{"
+    for i, f := range fields {
+        if i > 0 {
+            result += ", "
+        }
+        result += fmt.Sprintf("%s=%v", f.Key, f.Value)
+    }
+    return result + "}"
 }
 
 func main() {
