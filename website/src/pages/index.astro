@@ -42,6 +42,7 @@ func main() {
     srv.Tool("search").
         Description("Search for documents").
         Handler(func(ctx context.Context, in SearchInput) ([]string, error) {
+            // search is your custom search function
             return search(in.Query, in.Limit), nil
         })
 
