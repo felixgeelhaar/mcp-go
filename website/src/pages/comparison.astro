@@ -110,7 +110,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
       <p>Manual dispatch and decoding:</p>
       <pre><code>{`// Protocol SDK style (manual dispatch)
 for {
-    raw := readMessage()
+    raw := readMessage() // Placeholder - implement your own message reading logic
     msg := mcp.Decode(raw)
 
     switch msg.Type {
@@ -136,6 +136,7 @@ srv.AddTool(mcp.Tool{
     },
 }, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
     query, _ := req.Params.Arguments["query"].(string)
+    results := performSearch(query) // Placeholder - implement your own search logic
     return mcp.NewToolResultText(results), nil
 })`}</code></pre>
 
@@ -150,7 +151,8 @@ type SearchInput struct {
 srv.Tool("search").
     Description("Search for items").
     Handler(func(ctx context.Context, in SearchInput) ([]string, error) {
-        return search(in.Query), nil
+        results := search(in.Query) // Placeholder - implement your own search function
+        return results, nil
     })`}</code></pre>
     </section>
 
@@ -168,7 +170,7 @@ srv.Tool("search").
     if limit < 1 || limit > 100 {
         return nil, errors.New("limit must be 1-100")
     }
-    // ...
+    // Perform operation with validated inputs - implement your own logic
 }`}</code></pre>
 
       <h3>mcp-go</h3>
@@ -180,7 +182,8 @@ srv.Tool("search").
 
 srv.Tool("search").Handler(func(ctx context.Context, in SearchInput) ([]string, error) {
     // in.Query and in.Limit are already validated
-    return search(in.Query, in.Limit), nil
+    results := search(in.Query, in.Limit) // Placeholder - implement your own search function
+    return results, nil
 })`}</code></pre>
     </section>
 
@@ -191,6 +194,7 @@ srv.Tool("search").Handler(func(ctx context.Context, in SearchInput) ([]string, 
       <p>No built-in middleware. You wrap handlers manually:</p>
       <pre><code>{`handler := func(ctx context.Context, req Request) (Response, error) { ... }
 
+// Placeholder functions - implement your own middleware wrappers
 handler = withTimeout(5*time.Second, handler)
 handler = withAuth(authz, handler)
 handler = withLogging(logger, handler)`}</code></pre>
@@ -201,8 +205,8 @@ handler = withLogging(logger, handler)`}</code></pre>
     middleware.Recover(),
     middleware.RequestID(),
     middleware.Timeout(5*time.Second),
-    middleware.Logging(logger),
-    middleware.Auth(authValidator),
+    middleware.Logging(logger),        // Provide your logger instance
+    middleware.Auth(authValidator),     // Provide your auth validator
 )`}</code></pre>
     </section>
 
@@ -217,7 +221,7 @@ handler = withLogging(logger, handler)`}</code></pre>
 }, func(ctx context.Context, req mcp.ReadResourceRequest) (string, error) {
     uri := req.Params.URI
     id := strings.TrimPrefix(uri, "incidents://")
-    // ...
+    // Fetch and return incident data - implement your own logic
 })`}</code></pre>
 
       <h3>mcp-go</h3>
@@ -227,7 +231,7 @@ handler = withLogging(logger, handler)`}</code></pre>
     MimeType("application/json").
     Handler(func(ctx context.Context, uri string, params map[string]string) (*mcp.ResourceContent, error) {
         id := params["id"]  // extracted automatically
-        // ...
+        // Fetch and return incident data - implement your own logic
     })`}</code></pre>
     </section>
 
@@ -241,7 +245,7 @@ handler = withLogging(logger, handler)`}</code></pre>
     Description: "Summarize content",
 }, func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
     topic, _ := req.Params.Arguments["topic"].(string)
-    // ...
+    // Generate and return prompt - implement your own logic
 })`}</code></pre>
 
       <h3>mcp-go</h3>
@@ -251,7 +255,7 @@ handler = withLogging(logger, handler)`}</code></pre>
     Argument("topic", "Topic to summarize", true).
     Handler(func(ctx context.Context, args map[string]string) (*mcp.PromptResult, error) {
         topic := args["topic"]  // guaranteed present
-        // ...
+        // Generate and return prompt - implement your own logic
     })`}</code></pre>
     </section>
 
