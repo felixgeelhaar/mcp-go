@@ -50,6 +50,17 @@ const navItems = [
     ].join(',');
     focusableElements = Array.from(nav.querySelectorAll(selectors))
       .filter(el => !el.hasAttribute('disabled') && el.getAttribute('aria-hidden') !== 'true');
+    
+    // Include the menu toggle button in the focus trap so keyboard users
+    // can discover and reach the close control via Tab/Shift+Tab.
+    if (
+      toggle &&
+      !toggle.hasAttribute('disabled') &&
+      toggle.getAttribute('aria-hidden') !== 'true'
+    ) {
+      focusableElements.push(toggle);
+    }
+    
     firstFocusable = focusableElements[0] || null;
     lastFocusable = focusableElements[focusableElements.length - 1] || null;
   }
@@ -127,9 +138,13 @@ const navItems = [
     });
   });
 
-  // Initialize aria-hidden on page load
+  // Initialize aria-hidden on page load only for mobile viewports
   if (nav) {
-    nav.setAttribute('aria-hidden', 'true');
+    if (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(max-width: 768px)').matches) {
+      nav.setAttribute('aria-hidden', 'true');
+    } else {
+      nav.removeAttribute('aria-hidden');
+    }
   }
 </script>
 
