@@ -68,7 +68,10 @@ srv.Tool("calculate").
             return nil, err
         }
 
-        data, _ := json.Marshal(user)
+        data, err := json.Marshal(user)
+        if err != nil {
+            return nil, err
+        }
         return &mcp.ResourceContent{
             URI:      uri,
             MimeType: "application/json",
