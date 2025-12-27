@@ -307,6 +307,10 @@ func NewServer(info ServerInfo, opts ...Option) *Server {
 	return server.New(info, opts...)
 }
 
+// WithInstructions sets the server instructions that provide context to AI models
+// about how to use this server effectively.
+var WithInstructions = server.WithInstructions
+
 // ServeStdio runs the server using stdio transport.
 // This blocks until the context is canceled or an error occurs.
 func ServeStdio(ctx context.Context, srv *Server, opts ...ServeOption) error {
@@ -511,6 +515,11 @@ func (h *requestHandler) handleInitialize(req *protocol.Request) (*protocol.Resp
 			"version": manifest.Version,
 		},
 		"capabilities": capabilities,
+	}
+
+	// Include instructions if set
+	if instructions := h.srv.Instructions(); instructions != "" {
+		result["instructions"] = instructions
 	}
 
 	return protocol.NewResponse(req.ID, result), nil
