@@ -60,7 +60,8 @@ func Example() {
 			}, nil
 		})
 
-	_ = srv // Use srv with mcp.ServeStdio, mcp.ServeHTTP, etc.
+	fmt.Println("Server created with tools, resources, and prompts")
+	// Output: Server created with tools, resources, and prompts
 }
 
 // ExampleProgressFromContext demonstrates progress reporting in tool handlers.
@@ -83,7 +84,8 @@ func ExampleProgressFromContext() {
 		return "done", nil
 	})
 
-	_ = srv
+	fmt.Println("Tool with progress reporting registered")
+	// Output: Tool with progress reporting registered
 }
 
 // ExampleDefaultMiddlewareWithTimeout shows using the production middleware stack.
@@ -99,4 +101,7 @@ func ExampleDefaultMiddlewareWithTimeout() {
 	// mcp.ServeStdio(ctx, srv, mcp.WithMiddleware(
 	//     mcp.DefaultMiddlewareWithTimeout(logger, 30*time.Second)...,
 	// ))
+
+	fmt.Println("Server configured with default middleware")
+	// Output: Server configured with default middleware
 }
