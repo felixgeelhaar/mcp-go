@@ -45,8 +45,7 @@ const navItems = [
       return Array.from(
         nav.querySelectorAll('a, button, [tabindex]:not([tabindex="-1"])')
       ).filter((el) => {
-        const element = el;
-        return !element.hasAttribute('disabled') && element.getAttribute('aria-hidden') !== 'true';
+        return !el.hasAttribute('disabled') && el.getAttribute('aria-hidden') !== 'true';
       });
     };
 
@@ -123,7 +122,7 @@ const navItems = [
       const current = document.activeElement;
 
       // If focus is outside the nav when the menu is open, move it to the first item
-      if (!nav.contains(current)) {
+      if (!current || !nav.contains(current)) {
         event.preventDefault();
         first.focus();
         return;
