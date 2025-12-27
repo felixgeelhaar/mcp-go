@@ -48,7 +48,7 @@
   /* Layout */
   --container-max: 72rem;
 
-  /* Breakpoints */
+  /* Breakpoints (for reference - cannot be used in @media queries due to CSS limitations) */
   --breakpoint-md: 768px;
   --breakpoint-sm: 480px;
 }
