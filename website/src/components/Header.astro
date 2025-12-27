@@ -33,25 +33,117 @@ const navItems = [
 </header>
 
 <script>
-  const toggle = document.querySelector('.menu-toggle');
-  const nav = document.querySelector('.nav');
-  const header = document.querySelector('.header');
+  function initHeaderMenu() {
+    const toggle = document.querySelector('.menu-toggle');
+    const nav = document.querySelector('.nav');
+    const header = document.querySelector('.header');
+    let lastFocusedElement = null;
 
-  toggle?.addEventListener('click', () => {
-    const isExpanded = toggle.getAttribute('aria-expanded') === 'true';
-    toggle.setAttribute('aria-expanded', String(!isExpanded));
-    nav?.classList.toggle('nav-open');
-    header?.classList.toggle('menu-open');
-  });
+    if (!toggle || !nav || !header) return;
 
-  // Close menu when clicking a link
-  nav?.querySelectorAll('.nav-link').forEach(link => {
-    link.addEventListener('click', () => {
-      toggle?.setAttribute('aria-expanded', 'false');
-      nav?.classList.remove('nav-open');
-      header?.classList.remove('menu-open');
+    const getFocusableNavElements = () => {
+      return Array.from(
+        nav.querySelectorAll('a, button, [tabindex]:not([tabindex="-1"])')
+      ).filter((el) => {
+        const element = el;
+        return !element.hasAttribute('disabled') && element.getAttribute('aria-hidden') !== 'true';
+      });
+    };
+
+    const openMenu = () => {
+      // Remember the element that had focus before opening
+      if (document.activeElement instanceof HTMLElement) {
+        lastFocusedElement = document.activeElement;
+      } else {
+        lastFocusedElement = null;
+      }
+
+      toggle.setAttribute('aria-expanded', 'true');
+      nav.classList.add('nav-open');
+      header.classList.add('menu-open');
+
+      const focusable = getFocusableNavElements();
+      if (focusable.length > 0) {
+        focusable[0].focus();
+      }
+    };
+
+    const closeMenu = () => {
+      toggle.setAttribute('aria-expanded', 'false');
+      nav.classList.remove('nav-open');
+      header.classList.remove('menu-open');
+
+      // Restore focus to the element that was focused before opening, if possible
+      if (lastFocusedElement && document.contains(lastFocusedElement)) {
+        lastFocusedElement.focus();
+      } else {
+        toggle.focus();
+      }
+    };
+
+    toggle.addEventListener('click', () => {
+      const isExpanded = toggle.getAttribute('aria-expanded') === 'true';
+      if (isExpanded) {
+        closeMenu();
+      } else {
+        openMenu();
+      }
     });
-  });
+
+    // Close menu when clicking a link
+    nav.querySelectorAll('.nav-link').forEach((link) => {
+      link.addEventListener('click', () => {
+        closeMenu();
+      });
+    });
+
+    // Trap focus within the navigation when the menu is open,
+    // and allow Escape to close the menu.
+    document.addEventListener('keydown', (event) => {
+      const isExpanded = toggle.getAttribute('aria-expanded') === 'true';
+      if (!isExpanded) return;
+
+      if (event.key === 'Escape' || event.key === 'Esc') {
+        event.preventDefault();
+        closeMenu();
+        return;
+      }
+
+      if (event.key !== 'Tab') {
+        return;
+      }
+
+      const focusable = getFocusableNavElements();
+      if (focusable.length === 0) {
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const current = document.activeElement;
+
+      // If focus is outside the nav when the menu is open, move it to the first item
+      if (!nav.contains(current)) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
+
+      if (event.shiftKey && current === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && current === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initHeaderMenu, { once: true });
+  } else {
+    initHeaderMenu();
+  }
 </script>
 
 <style>

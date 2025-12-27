@@ -353,6 +353,13 @@ handler = withLogging(logger, handler)`}</code></pre>
   .table-wrapper {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+    /* NOTE:
+     * The negative horizontal margin here is intended to cancel out the parent
+     * container's horizontal padding so the table can extend to the container edge.
+     * This assumes the parent container uses var(--space-4) for its horizontal
+     * padding. If that padding value changes, update both the margin and padding
+     * below to keep the layout consistent.
+     */
     margin: 0 calc(-1 * var(--space-4));
     padding: 0 var(--space-4);
   }

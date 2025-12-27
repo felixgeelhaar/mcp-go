@@ -225,13 +225,13 @@ tr:hover td {
   }
 
   pre {
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
     padding: var(--space-3);
     border-radius: var(--radius-sm);
   }
 
   table {
-    font-size: 0.8rem;
+    font-size: var(--text-sm);
   }
 
   th, td {
@@ -255,8 +255,11 @@ tr:hover td {
   }
 
   pre {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     padding: var(--space-2);
+    /* Extend code blocks to the viewport edges on very small screens.
+       These negative margins assume .container has horizontal padding
+       of var(--space-3) at this breakpoint; update both together if changed. */
     margin-left: calc(-1 * var(--space-3));
     margin-right: calc(-1 * var(--space-3));
     border-radius: 0;
