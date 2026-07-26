@@ -32,13 +32,18 @@ jobs:
     with:
       coverage: true          # repo has .coverctl.yaml thresholds (coverctl check gate)
       cross-platform: false   # ubuntu-only; opt into macOS/Windows later if needed
-      # Pin nox to a version this repo's reviewed .nox/baseline.json is
-      # compatible with. Must be >= 1.1.2: earlier nox (e.g. the prior
-      # 0.10.0 pin) shipped a deriveChecksumsURL that only stripped
-      # ".sig.bundle", so it could not verify the taint-analysis plugin's
-      # ".sigstore.json" cosign bundle — cosign was handed the bundle as
-      # the artifact and failed with "invalid signature when validating
-      # ASN.1 encoded signature", leaving the plugin "unverified" and
-      # breaking `nox scan`. v1.1.2+ strips ".sigstore.json" correctly.
-      nox-version: "1.2.0"
-      nox-sha256: "75262d80314e879d7e755edeacab4c0bb8df83519322b82589b0745ccab489d5"
+      # nox-version deliberately NOT pinned here: inherit the shared go-ci
+      # default, so the scanner and this repo's committed baseline stay on the
+      # same fingerprint algorithm.
+      #
+      # The old "1.2.0" pin was a workaround for a v1.1.x cosign bug — it could
+      # not verify the taint plugin's ".sigstore.json" bundle — fixed in v1.1.2
+      # and long since carried by the shared default. The workaround outlived its
+      # reason and became the defect: nox v1.3.0 changed the baseline fingerprint
+      # to sha256(rule‖normalised_path‖content), .nox/baseline.json is already v2,
+      # and a 1.2.0 scanner computes v1. It matched 0 of 4 entries, so the gate
+      # short-circuited to report-only — green, and asserting nothing, on a
+      # REQUIRED check.
+      #
+      # Verified under the shared default (1.17.0): 4 baselined, 1 new (medium,
+      # below the crit/high gate).
