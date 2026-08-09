@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`StructuredResult` emitted `"structuredContent": null` when a handler
+  returned no structured payload.** The field had no `omitempty`, so a nil map
+  encoded as `null`.
+
+  The spec makes `structuredContent` optional and requires it to match the
+  tool's `outputSchema` when present. `null` matches no object schema, so a
+  strict client rejects the *entire* result during validation — including the
+  text content that would have explained what happened.
+
+  The damage is worst on error results, which is exactly when that text
+  matters. A handler returning `IsError` with a helpful message had the
+  message discarded and replaced by a schema-validation failure, leaving the
+  caller unable to distinguish "the operation failed" from "the response could
+  not be encoded". For a tool that mutates state, that is the difference
+  between knowing a write applied and guessing — a client that retries on
+  error could double-apply it. Reported downstream as
+  felixgeelhaar/roady#92.
+
+  A struct tag alone cannot fix this: without `omitempty` a nil map encodes as
+  `null`, and with it an empty-but-present map is dropped too, so a tool whose
+  schema permits `{}` loses the ability to say so. `StructuredResult` now has
+  a `MarshalJSON` that omits a nil payload and preserves an empty one.
+
 ## [1.24.0](https://github.com/klarlabs-studio/mcp-go/compare/v1.23.0...v1.24.0) - 2026-07-11
 
 Makes the stateless (MCP 2026-07-28) model the **default** for the Streamable
