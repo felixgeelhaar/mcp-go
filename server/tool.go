@@ -27,9 +27,45 @@ type StructuredResult struct {
 	// Content contains text/image content blocks for display.
 	Content []Content `json:"content,omitempty"`
 	// StructuredContent contains typed data matching the tool's outputSchema.
-	StructuredContent map[string]any `json:"structuredContent"`
+	//
+	// A nil map is omitted from the JSON entirely; an empty non-nil map is
+	// encoded as {}. See MarshalJSON — the distinction is load-bearing and
+	// `omitempty` cannot express it, because it drops both.
+	StructuredContent map[string]any `json:"structuredContent,omitempty"`
 	// IsError indicates whether the result represents an error.
 	IsError bool `json:"isError,omitempty"`
+}
+
+// MarshalJSON omits structuredContent when there is no structured payload,
+// and preserves an explicitly empty one.
+//
+// The spec makes structuredContent optional and requires it to match the
+// tool's outputSchema when present. `null` matches no object schema, so a
+// strict client rejects the whole result during validation — including the
+// text content that would have explained what happened. The damage is worst
+// on error results, which is precisely when that text matters: the caller
+// cannot distinguish "the operation failed" from "the response could not be
+// encoded", and for a mutating tool that is the difference between knowing
+// the write applied and guessing.
+//
+// A struct tag alone cannot do this. Without `omitempty` a nil map encodes as
+// null; with it, an empty-but-present map is dropped too, and a tool whose
+// schema permits {} loses the ability to say so.
+func (r StructuredResult) MarshalJSON() ([]byte, error) {
+	type alias StructuredResult // avoid recursing into this method
+
+	if r.StructuredContent == nil {
+		return json.Marshal(struct {
+			Content []Content `json:"content,omitempty"`
+			IsError bool      `json:"isError,omitempty"`
+		}{Content: r.Content, IsError: r.IsError})
+	}
+
+	// Non-nil, including empty: encode it, so {} survives.
+	return json.Marshal(struct {
+		alias
+		StructuredContent map[string]any `json:"structuredContent"`
+	}{alias: alias(r), StructuredContent: r.StructuredContent})
 }
 
 // Tool represents a callable function exposed via MCP.
