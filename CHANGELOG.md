@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.24.1](https://github.com/klarlabs-studio/mcp-go/compare/v1.24.0...v1.24.1) - 2026-08-10
+
 ### Fixed
 
 - **`StructuredResult` emitted `"structuredContent": null` when a handler
