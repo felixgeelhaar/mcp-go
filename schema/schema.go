@@ -4,6 +4,7 @@ package schema
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -310,25 +311,117 @@ func (c *genContext) genArray(t reflect.Type) (*Schema, error) {
 	}, nil
 }
 
+// directivePrefixes are the key= forms this parser understands. A comma-
+// separated part that starts with none of them, and is not a bare directive,
+// is prose belonging to the preceding description.
+var directivePrefixes = []string{
+	"description=",
+	"minimum=",
+	"maximum=",
+	"default=",
+	"enum=",
+}
+
+// parseJSONSchemaTag reads a `jsonschema:"..."` struct tag into schema.
+//
+// The tag is comma-separated, which collides with prose: a description like
+//
+//	jsonschema:"description=Maximum results to return (default 10, capped at 50)"
+//
+// splits into two parts, and the second is not a directive. This used to drop
+// it, silently truncating the description at the first comma -- so a tool
+// advertised "Maximum results to return (default 10" to its callers, cut
+// mid-parenthesis. For an MCP server the description is the contract with the
+// model, and the model has no way to notice it was cut.
+//
+// Rather than require escaping, a part matching no known directive is treated
+// as a continuation of the description and rejoined with the comma it was split
+// on. Well-formed tags parse exactly as before; previously-truncated ones now
+// keep their text.
+//
+// minimum, maximum, default and enum were listed in a TODO here and accepted
+// but discarded, so a field carrying them advertised no constraint at all.
+// They populate their Schema fields now. enum takes "|" as its separator,
+// since "," already delimits directives.
 func parseJSONSchemaTag(tag string, schema *Schema, required *[]string, fieldName string) {
 	if tag == "" {
 		return
 	}
 
-	parts := strings.Split(tag, ",")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
+	var lastDescription *string
 
-		if part == tagRequired {
+	for _, part := range strings.Split(tag, ",") {
+		trimmed := strings.TrimSpace(part)
+
+		if trimmed == tagRequired {
 			*required = append(*required, fieldName)
+			lastDescription = nil
 			continue
 		}
 
-		if strings.HasPrefix(part, "description=") {
-			schema.Description = strings.TrimPrefix(part, "description=")
+		if !isDirective(trimmed) {
+			// Prose that was split off a description. Restore the comma and
+			// the original spacing; anything before the first description is
+			// unattributable, so it is dropped as it always was.
+			if lastDescription != nil {
+				*lastDescription += "," + part
+			}
 			continue
 		}
 
-		// Add more tag parsing as needed (minimum, maximum, enum, etc.)
+		switch {
+		case strings.HasPrefix(trimmed, "description="):
+			schema.Description = strings.TrimPrefix(trimmed, "description=")
+			lastDescription = &schema.Description
+		case strings.HasPrefix(trimmed, "minimum="):
+			if v, err := strconv.ParseFloat(strings.TrimPrefix(trimmed, "minimum="), 64); err == nil {
+				schema.Minimum = &v
+			}
+			lastDescription = nil
+		case strings.HasPrefix(trimmed, "maximum="):
+			if v, err := strconv.ParseFloat(strings.TrimPrefix(trimmed, "maximum="), 64); err == nil {
+				schema.Maximum = &v
+			}
+			lastDescription = nil
+		case strings.HasPrefix(trimmed, "default="):
+			schema.Default = parseTagValue(strings.TrimPrefix(trimmed, "default="))
+			lastDescription = nil
+		case strings.HasPrefix(trimmed, "enum="):
+			for _, v := range strings.Split(strings.TrimPrefix(trimmed, "enum="), "|") {
+				if v = strings.TrimSpace(v); v != "" {
+					schema.Enum = append(schema.Enum, parseTagValue(v))
+				}
+			}
+			lastDescription = nil
+		}
 	}
+}
+
+// isDirective reports whether a tag part is something this parser acts on,
+// rather than prose split off a description by a comma.
+func isDirective(part string) bool {
+	if part == tagRequired {
+		return true
+	}
+	for _, prefix := range directivePrefixes {
+		if strings.HasPrefix(part, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseTagValue types a tag value so `default=4` on an int field encodes as 4
+// rather than "4", which a strict validator would reject against type integer.
+func parseTagValue(raw string) any {
+	if b, err := strconv.ParseBool(raw); err == nil {
+		return b
+	}
+	if i, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return i
+	}
+	if f, err := strconv.ParseFloat(raw, 64); err == nil {
+		return f
+	}
+	return raw
 }
