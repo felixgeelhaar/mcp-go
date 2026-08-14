@@ -58,6 +58,9 @@ func postMCP(t *testing.T, ts *httptest.Server, accept, sessionID string, req pr
 		t.Fatalf("build request: %v", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if httpReq.Header.Get(protocol.HeaderProtocolVersion) == "" {
+		httpReq.Header.Set(protocol.HeaderProtocolVersion, protocol.MCPVersion)
+	}
 	if accept != "" {
 		httpReq.Header.Set("Accept", accept)
 	}
@@ -306,6 +309,49 @@ func TestStreamableHTTP_DeleteSession(t *testing.T) {
 	}
 }
 
+func TestStreamableHTTP_ProtocolVersionHeaderRequired(t *testing.T) {
+	_, ts := newStreamableServer(t)
+	sid := initSession(t, ts)
+
+	body, err := json.Marshal(protocol.Request{
+		JSONRPC: protocol.JSONRPCVersion,
+		ID:      json.RawMessage(`2`),
+		Method:  "ping",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, ts.URL+"/mcp", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Mcp-Session-Id", sid)
+	resp, err := ts.Client().Do(httpReq)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing MCP-Protocol-Version status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestStreamableHTTP_ProtocolVersionHeaderUnsupported(t *testing.T) {
+	_, ts := newStreamableServer(t)
+	sid := initSession(t, ts)
+
+	resp := postMCPWithHeaders(t, ts, "application/json", sid, protocol.Request{
+		JSONRPC: protocol.JSONRPCVersion,
+		ID:      json.RawMessage(`2`),
+		Method:  "ping",
+	}, map[string]string{protocol.HeaderProtocolVersion: "1999-01-01"})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unsupported version status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestStreamableHTTP_OriginEnforced(t *testing.T) {
 	_, ts := newStreamableServer(t, WithAllowedOrigins("https://trusted.example"))
 
@@ -367,6 +413,25 @@ func TestStreamableHTTP_LegacyDefaultUnchanged(t *testing.T) {
 	}
 }
 
+func TestStreamableHTTP_LegacyHTTPOptOut(t *testing.T) {
+	h := NewHTTP("127.0.0.1:0", WithLegacyHTTP())
+	ts := httptest.NewServer(h.createHandler(streamableTestHandler()))
+	t.Cleanup(ts.Close)
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/mcp", nil)
+	if err != nil {
+		t.Fatalf("build GET: %v", err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do GET: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("WithLegacyHTTP GET /mcp status = %d, want 405", resp.StatusCode)
+	}
+}
+
 // postMCPWithHeaders is postMCP plus arbitrary extra request headers, used to
 // exercise the modern Mcp-Method / Mcp-Name routing headers.
 func postMCPWithHeaders(t *testing.T, ts *httptest.Server, accept, sessionID string, req protocol.Request, headers map[string]string) *http.Response {
@@ -380,6 +445,9 @@ func postMCPWithHeaders(t *testing.T, ts *httptest.Server, accept, sessionID str
 		t.Fatalf("build request: %v", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if httpReq.Header.Get(protocol.HeaderProtocolVersion) == "" {
+		httpReq.Header.Set(protocol.HeaderProtocolVersion, protocol.MCPVersion)
+	}
 	if accept != "" {
 		httpReq.Header.Set("Accept", accept)
 	}

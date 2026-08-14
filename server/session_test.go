@@ -299,6 +299,25 @@ func TestSessionLoggingFiltering(t *testing.T) {
 	}
 }
 
+func TestSessionLoggingDisabled(t *testing.T) {
+	notifier := &mockNotificationSender{}
+	session := NewSession("session-1", &mockRequestSender{}, notifier)
+	session.SetLoggingEnabled(false)
+
+	session.Info("app", "should not emit")
+	session.Error("app", "should not emit either")
+
+	if len(notifier.notifications) != 0 {
+		t.Errorf("expected no log notifications when logging is disabled, got %d", len(notifier.notifications))
+	}
+
+	session.SetLogLevel(LogLevelInfo)
+	session.Info("app", "opted in")
+	if len(notifier.notifications) != 1 {
+		t.Errorf("SetLogLevel should re-enable logging, got %d notifications", len(notifier.notifications))
+	}
+}
+
 func TestSessionCancel(t *testing.T) {
 	sender := &mockRequestSender{}
 	notifier := &mockNotificationSender{}

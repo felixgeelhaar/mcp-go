@@ -74,6 +74,81 @@ func TestClient_Initialize(t *testing.T) {
 		}
 	})
 
+	t.Run("Discover records supportedVersions", func(t *testing.T) {
+		transport := &mockTransport{
+			responses: []protocol.Response{
+				{
+					JSONRPC: "2.0",
+					ID:      json.RawMessage(`1`),
+					Result: map[string]any{
+						"resultType":        "complete",
+						"supportedVersions": []any{"2025-11-25", "2026-07-28"},
+						"serverInfo": map[string]any{
+							"name":    "disc-server",
+							"version": "3.0.0",
+						},
+						"capabilities": map[string]any{
+							"tools": map[string]any{},
+						},
+					},
+				},
+			},
+		}
+		c := client.New(transport)
+		info, err := c.Discover(context.Background())
+		if err != nil {
+			t.Fatalf("Discover: %v", err)
+		}
+		if info.Name != "disc-server" {
+			t.Errorf("name = %q", info.Name)
+		}
+		if len(info.SupportedVersions) != 2 {
+			t.Errorf("supportedVersions = %v", info.SupportedVersions)
+		}
+	})
+
+	t.Run("Discover then ListTools attaches modern _meta", func(t *testing.T) {
+		transport := &mockTransport{
+			responses: []protocol.Response{
+				{
+					JSONRPC: "2.0",
+					ID:      json.RawMessage(`1`),
+					Result: map[string]any{
+						"resultType":        "complete",
+						"supportedVersions": []any{"2026-07-28"},
+						"serverInfo":        map[string]any{"name": "s", "version": "1"},
+						"capabilities":      map[string]any{"tools": map[string]any{}},
+					},
+				},
+				{
+					JSONRPC: "2.0",
+					ID:      json.RawMessage(`2`),
+					Result: map[string]any{
+						"tools": []any{},
+					},
+				},
+			},
+		}
+		c := client.New(transport)
+		if _, err := c.Discover(context.Background()); err != nil {
+			t.Fatalf("Discover: %v", err)
+		}
+		if _, err := c.ListTools(context.Background()); err != nil {
+			t.Fatalf("ListTools: %v", err)
+		}
+		if len(transport.requests) != 2 {
+			t.Fatalf("requests = %d, want 2", len(transport.requests))
+		}
+		var params map[string]any
+		if err := json.Unmarshal(transport.requests[1].Params, &params); err != nil {
+			t.Fatalf("unmarshal list params: %v", err)
+		}
+		meta, _ := params["_meta"].(map[string]any)
+		if meta[protocol.MetaKeyProtocolVersion] != protocol.ModernVersion {
+			t.Errorf("ListTools _meta = %#v, want modern protocolVersion", meta)
+		}
+	})
+
 	t.Run("returns error on failed handshake", func(t *testing.T) {
 		transport := &mockTransport{
 			responses: []protocol.Response{

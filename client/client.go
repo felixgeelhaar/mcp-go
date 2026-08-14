@@ -56,13 +56,19 @@ type Client struct {
 	serverInfo              *ServerInfo
 	resourceUpdatedHandlers []func(uri string)
 	requestID               atomic.Int64
+	// modern is true after Discover (or when constructed with ModernVersion):
+	// subsequent calls attach per-request _meta instead of relying on initialize.
+	modern bool
 }
 
 // Icon represents an icon for UI display.
 type Icon struct {
-	URI      string `json:"uri"`
+	URI      string `json:"uri,omitempty"`
+	Src      string `json:"src,omitempty"`
 	MimeType string `json:"mimeType,omitempty"`
 	Size     int    `json:"size,omitempty"`
+	Sizes    string `json:"sizes,omitempty"`
+	Theme    string `json:"theme,omitempty"`
 }
 
 // BuildInfo contains build metadata for debugging and version verification.
@@ -73,15 +79,16 @@ type BuildInfo struct {
 
 // ServerInfo contains information about the connected server.
 type ServerInfo struct {
-	Name            string
-	Version         string
-	Title           string
-	Description     string
-	WebsiteURL      string
-	Icons           []Icon
-	BuildInfo       *BuildInfo
-	ProtocolVersion string
-	Capabilities    Capabilities
+	Name              string
+	Version           string
+	Title             string
+	Description       string
+	WebsiteURL        string
+	Icons             []Icon
+	BuildInfo         *BuildInfo
+	ProtocolVersion   string
+	SupportedVersions []string
+	Capabilities      Capabilities
 }
 
 // Capabilities describes what features the server supports.
@@ -198,7 +205,7 @@ func New(transport Transport, opts ...Option) *Client {
 		timeout:     30 * time.Second,
 		clientName:  "mcp-go-client",
 		clientVer:   "1.0.0",
-		protocolVer: "2024-11-05",
+		protocolVer: protocol.MCPVersion,
 	}
 
 	for _, opt := range opts {
@@ -220,11 +227,23 @@ func parseIcons(icons []any) []Icon {
 			if uri, ok := m["uri"].(string); ok {
 				icon.URI = uri
 			}
+			if src, ok := m["src"].(string); ok {
+				icon.Src = src
+				if icon.URI == "" {
+					icon.URI = src
+				}
+			}
 			if mime, ok := m["mimeType"].(string); ok {
 				icon.MimeType = mime
 			}
 			if size, ok := m["size"].(float64); ok {
 				icon.Size = int(size)
+			}
+			if sizes, ok := m["sizes"].(string); ok {
+				icon.Sizes = sizes
+			}
+			if theme, ok := m["theme"].(string); ok {
+				icon.Theme = theme
 			}
 			result = append(result, icon)
 		}
@@ -242,6 +261,35 @@ func parseBuildInfo(bi map[string]any) *BuildInfo {
 		info.BuildDate = buildDate
 	}
 	return info
+}
+
+// applyImplementation copies an Implementation object (serverInfo) onto info.
+func applyImplementation(info *ServerInfo, raw any) {
+	si, ok := raw.(map[string]any)
+	if !ok {
+		return
+	}
+	if name, ok := si[fieldName].(string); ok {
+		info.Name = name
+	}
+	if ver, ok := si[fieldVersion].(string); ok {
+		info.Version = ver
+	}
+	if title, ok := si["title"].(string); ok {
+		info.Title = title
+	}
+	if desc, ok := si["description"].(string); ok {
+		info.Description = desc
+	}
+	if url, ok := si["websiteUrl"].(string); ok {
+		info.WebsiteURL = url
+	}
+	if icons, ok := si["icons"].([]any); ok {
+		info.Icons = parseIcons(icons)
+	}
+	if bi, ok := si["buildInfo"].(map[string]any); ok {
+		info.BuildInfo = parseBuildInfo(bi)
+	}
 }
 
 // Initialize performs the MCP handshake with the server.
@@ -271,29 +319,7 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 		info.ProtocolVersion = pv
 	}
 
-	if si, ok := result["serverInfo"].(map[string]any); ok {
-		if name, ok := si[fieldName].(string); ok {
-			info.Name = name
-		}
-		if ver, ok := si[fieldVersion].(string); ok {
-			info.Version = ver
-		}
-		if title, ok := si["title"].(string); ok {
-			info.Title = title
-		}
-		if desc, ok := si["description"].(string); ok {
-			info.Description = desc
-		}
-		if url, ok := si["websiteUrl"].(string); ok {
-			info.WebsiteURL = url
-		}
-		if icons, ok := si["icons"].([]any); ok {
-			info.Icons = parseIcons(icons)
-		}
-		if bi, ok := si["buildInfo"].(map[string]any); ok {
-			info.BuildInfo = parseBuildInfo(bi)
-		}
-	}
+	applyImplementation(info, result["serverInfo"])
 
 	if caps, ok := result["capabilities"].(map[string]any); ok {
 		if _, ok := caps["tools"]; ok {
@@ -311,6 +337,68 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 	c.serverInfo = info
 	c.mu.Unlock()
 
+	if setter, ok := c.transport.(protocolVersionSetter); ok && info.ProtocolVersion != "" {
+		setter.SetProtocolVersion(info.ProtocolVersion)
+	}
+
+	return info, nil
+}
+
+type protocolVersionSetter interface {
+	SetProtocolVersion(string)
+}
+
+// Discover calls server/discover (MCP 2026-07-28), the stateless replacement
+// for initialize. The client sends modern `_meta` and records the advertised
+// supportedVersions.
+func (c *Client) Discover(ctx context.Context) (*ServerInfo, error) {
+	if setter, ok := c.transport.(protocolVersionSetter); ok {
+		setter.SetProtocolVersion(protocol.ModernVersion)
+	}
+	params := map[string]any{
+		"_meta": map[string]any{
+			protocol.MetaKeyProtocolVersion:    protocol.ModernVersion,
+			protocol.MetaKeyClientInfo:         map[string]any{fieldName: c.opts.clientName, fieldVersion: c.opts.clientVer},
+			protocol.MetaKeyClientCapabilities: map[string]any{},
+		},
+	}
+	resp, err := c.call(ctx, protocol.MethodServerDiscover, params)
+	if err != nil {
+		return nil, fmt.Errorf("discover: %w", err)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("discover: %w", ErrInvalidResult)
+	}
+	info := &ServerInfo{ProtocolVersion: protocol.ModernVersion}
+	if versions, ok := result["supportedVersions"].([]any); ok {
+		for _, v := range versions {
+			if s, ok := v.(string); ok {
+				info.SupportedVersions = append(info.SupportedVersions, s)
+			}
+		}
+	}
+	applyImplementation(info, result["serverInfo"])
+	if info.Name == "" {
+		if meta, ok := result["_meta"].(map[string]any); ok {
+			applyImplementation(info, meta[protocol.MetaKeyServerInfo])
+		}
+	}
+	if caps, ok := result["capabilities"].(map[string]any); ok {
+		if _, ok := caps["tools"]; ok {
+			info.Capabilities.Tools = true
+		}
+		if _, ok := caps["resources"]; ok {
+			info.Capabilities.Resources = true
+		}
+		if _, ok := caps["prompts"]; ok {
+			info.Capabilities.Prompts = true
+		}
+	}
+	c.mu.Lock()
+	c.serverInfo = info
+	c.modern = true
+	c.mu.Unlock()
 	return info, nil
 }
 
@@ -622,6 +710,39 @@ func (c *Client) Close() error {
 	return c.transport.Close()
 }
 
+// withModernMeta attaches the per-request _meta a 2026-07-28 server requires
+// (protocolVersion, clientInfo, clientCapabilities). Existing _meta is left
+// untouched so Discover (which already sends it) is unchanged. Legacy clients
+// that only called Initialize never set c.modern.
+func (c *Client) withModernMeta(params json.RawMessage) (json.RawMessage, error) {
+	c.mu.RLock()
+	modern := c.modern
+	name, ver := c.opts.clientName, c.opts.clientVer
+	c.mu.RUnlock()
+	if !modern {
+		return params, nil
+	}
+	obj := map[string]any{}
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &obj); err != nil {
+			return params, nil
+		}
+	}
+	if _, ok := obj["_meta"]; ok {
+		return params, nil
+	}
+	obj["_meta"] = map[string]any{
+		protocol.MetaKeyProtocolVersion:    protocol.ModernVersion,
+		protocol.MetaKeyClientInfo:         map[string]any{fieldName: name, fieldVersion: ver},
+		protocol.MetaKeyClientCapabilities: map[string]any{},
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("marshal modern _meta: %w", err)
+	}
+	return out, nil
+}
+
 // call makes a JSON-RPC call to the server.
 func (c *Client) call(ctx context.Context, method string, params any) (*protocol.Response, error) {
 	id := c.requestID.Add(1)
@@ -633,6 +754,10 @@ func (c *Client) call(ctx context.Context, method string, params any) (*protocol
 		if err != nil {
 			return nil, fmt.Errorf("marshal params: %w", err)
 		}
+	}
+	paramsRaw, err := c.withModernMeta(paramsRaw)
+	if err != nil {
+		return nil, err
 	}
 
 	idRaw, err := json.Marshal(id)

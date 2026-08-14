@@ -37,6 +37,7 @@ func TestStreamableHTTP_SubscriptionsListenStream(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Mcp-Method", protocol.MethodSubscriptionsListen)
+	req.Header.Set(protocol.HeaderProtocolVersion, protocol.ModernVersion)
 
 	resp, err := ts.Client().Do(req)
 	if err != nil {

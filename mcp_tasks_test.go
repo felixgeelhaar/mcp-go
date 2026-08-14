@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"go.klarlabs.de/mcp/protocol"
 )
@@ -77,7 +78,7 @@ func TestTaskAugmentation_Flow(t *testing.T) {
 		t.Errorf("expected tool output in result, got %s", raw)
 	}
 	meta, _ := res["_meta"].(map[string]any)
-	rel, _ := meta[relatedTaskMetaKey].(map[string]any)
+	rel, _ := meta[protocol.MetaKeyRelatedTask].(map[string]any)
 	if rel == nil || rel["taskId"] != id {
 		t.Errorf("expected related-task meta with taskId %s, got %v", id, meta)
 	}
@@ -169,6 +170,190 @@ func TestTaskCapability_And_ExecutionTaskSupport(t *testing.T) {
 	exec, _ := tool["execution"].(map[string]any)
 	if exec == nil || exec["taskSupport"] != "optional" {
 		t.Errorf("expected execution.taskSupport=optional in tools/list, got %v", tool["execution"])
+	}
+}
+
+func TestTaskAugmentation_UnsolicitedRequiredModern(t *testing.T) {
+	srv := NewServer(ServerInfo{Name: "s", Version: "1"})
+	type in struct {
+		X string `json:"x"`
+	}
+	srv.Tool("must").Description("task required").TaskSupport(TaskSupportRequired).
+		Handler(func(_ in) (string, error) { return "ok", nil })
+	handler := newRequestHandler(srv)
+
+	resp, err := handler.HandleRequest(context.Background(), &protocol.Request{
+		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsCall,
+		Params: modernTaskParams(t, map[string]any{
+			"name": "must", "arguments": map[string]any{"x": "y"},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("modern required-task plain call: %v", err)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type %T", resp.Result)
+	}
+	if result[fieldResultType] != protocol.ResultTypeTask {
+		t.Fatalf("resultType = %v, want %q", result[fieldResultType], protocol.ResultTypeTask)
+	}
+	if result[fieldTaskID] == nil || result[fieldTaskID] == "" {
+		t.Fatalf("expected unsolicited task handle, got %#v", result)
+	}
+}
+
+func TestTasksResult_GatedOffForModern(t *testing.T) {
+	handler, id, release := newWorkingTask(t)
+	defer close(release)
+
+	modern := &protocol.Request{
+		JSONRPC: "2.0", ID: json.RawMessage(`11`), Method: protocol.MethodTasksResult,
+		Params: modernParams(t, protocol.ModernVersion, map[string]any{fieldTaskID: id}),
+	}
+	_, err := handler.HandleRequest(context.Background(), modern)
+	var mcpErr *protocol.Error
+	if !errors.As(err, &mcpErr) || mcpErr.Code != protocol.CodeMethodNotFound {
+		t.Fatalf("got %v, want MethodNotFound for modern tasks/result", err)
+	}
+}
+
+func TestModern_TasksGetInlinesCompletedResult(t *testing.T) {
+	release := make(chan struct{})
+	srv := NewServer(ServerInfo{Name: "s", Version: "1"})
+	srv.Tool("slow").Description("gated").TaskSupport(TaskSupportRequired).
+		Handler(func(_ context.Context, _ struct{}) (string, error) {
+			<-release
+			return "done", nil
+		})
+	handler := newRequestHandler(srv)
+
+	resp, err := handler.HandleRequest(context.Background(), &protocol.Request{
+		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsCall,
+		Params: modernTaskParams(t, map[string]any{
+			"name": "slow", "arguments": map[string]any{},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("tools/call: %v", err)
+	}
+	created := resp.Result.(map[string]any)
+	id, _ := created[fieldTaskID].(string)
+	if id == "" {
+		t.Fatalf("missing taskId: %#v", created)
+	}
+	close(release)
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got map[string]any
+	for time.Now().Before(deadline) {
+		getResp, getErr := handler.HandleRequest(context.Background(), &protocol.Request{
+			JSONRPC: "2.0", ID: json.RawMessage(`2`), Method: protocol.MethodTasksGet,
+			Params: modernTaskParams(t, map[string]any{fieldTaskID: id}),
+		})
+		if getErr != nil {
+			t.Fatalf("tasks/get: %v", getErr)
+		}
+		got = getResp.Result.(map[string]any)
+		if got[fieldStatus] == "completed" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got[fieldStatus] != "completed" {
+		t.Fatalf("status = %v, want completed", got[fieldStatus])
+	}
+	if _, ok := got[fieldTTLMs]; !ok {
+		t.Errorf("expected ttlMs on modern tasks/get")
+	}
+	raw, _ := json.Marshal(got[fieldResult])
+	if !strings.Contains(string(raw), "done") {
+		t.Errorf("expected inlined result, got %s", raw)
+	}
+}
+
+func TestModern_IgnoresTaskOptInOnOptional(t *testing.T) {
+	srv := NewServer(ServerInfo{Name: "s", Version: "1"})
+	srv.Tool("opt").Description("optional").TaskSupport(TaskSupportOptional).
+		Handler(func(_ struct{}) (string, error) { return "sync", nil })
+	handler := newRequestHandler(srv)
+
+	resp, err := handler.HandleRequest(context.Background(), &protocol.Request{
+		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsCall,
+		Params: modernParams(t, protocol.ModernVersion, map[string]any{
+			"name": "opt", "arguments": map[string]any{},
+			fieldTask: map[string]any{"ttl": 60000},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("tools/call: %v", err)
+	}
+	result := resp.Result.(map[string]any)
+	if result[fieldResultType] == protocol.ResultTypeTask || result[fieldTaskID] != nil {
+		t.Fatalf("optional tool must ignore retired task field, got %#v", result)
+	}
+	raw, _ := json.Marshal(result)
+	if !strings.Contains(string(raw), "sync") {
+		t.Errorf("expected synchronous result, got %s", raw)
+	}
+}
+
+func TestModern_TasksUpdateEmptyAck(t *testing.T) {
+	handler, id, release := newWorkingTask(t)
+	defer close(release)
+
+	resp, err := handler.HandleRequest(context.Background(), &protocol.Request{
+		JSONRPC: "2.0", ID: json.RawMessage(`3`), Method: protocol.MethodTasksUpdate,
+		Params: modernTaskParams(t, map[string]any{fieldTaskID: id, "ttl": int64(120000)}),
+	})
+	if err != nil {
+		t.Fatalf("tasks/update: %v", err)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resp.Result)
+	}
+	if _, hasTask := result[fieldTaskID]; hasTask {
+		t.Errorf("modern tasks/update must be an empty ack, got %#v", result)
+	}
+}
+
+func TestModern_TasksCancelEmptyAck(t *testing.T) {
+	handler, id, release := newWorkingTask(t)
+	defer close(release)
+
+	resp, err := handler.HandleRequest(context.Background(), &protocol.Request{
+		JSONRPC: "2.0", ID: json.RawMessage(`4`), Method: protocol.MethodTasksCancel,
+		Params: modernTaskParams(t, map[string]any{fieldTaskID: id}),
+	})
+	if err != nil {
+		t.Fatalf("tasks/cancel: %v", err)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map result, got %#v", resp.Result)
+	}
+	if _, hasTask := result[fieldTaskID]; hasTask {
+		t.Errorf("modern tasks/cancel must be an empty ack, got %#v", result)
+	}
+}
+
+func TestJSONRPCErrorMap(t *testing.T) {
+	if got := jsonRPCErrorMap(nil); got["code"] != protocol.CodeInternalError {
+		t.Errorf("nil err code = %v", got["code"])
+	}
+	inv := protocol.NewInvalidParams("nope")
+	got := jsonRPCErrorMap(inv)
+	if got["code"] != protocol.CodeInvalidParams || got["message"] != "nope" {
+		t.Errorf("invalid params map = %#v", got)
+	}
+	got = jsonRPCErrorMap(inv.WithData("x"))
+	if got["data"] != "x" {
+		t.Errorf("expected data, got %#v", got)
+	}
+	got = jsonRPCErrorMap(errors.New("boom"))
+	if got["code"] != protocol.CodeInternalError || got["message"] != "boom" {
+		t.Errorf("plain err map = %#v", got)
 	}
 }
 

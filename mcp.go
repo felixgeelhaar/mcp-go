@@ -28,6 +28,7 @@
 package mcp
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/tls"
@@ -59,6 +60,19 @@ const (
 	fieldURI             = "uri"
 	fieldTask            = "task"
 	fieldTaskID          = "taskId"
+	fieldStatus          = "status"
+	fieldCreatedAt       = "createdAt"
+	fieldLastUpdatedAt   = "lastUpdatedAt"
+	fieldTTLMs           = "ttlMs"
+	fieldPollIntervalMs  = "pollIntervalMs"
+	fieldStatusMessage   = "statusMessage"
+	fieldResult          = "result"
+	fieldError           = "error"
+	fieldResultType      = "resultType"
+	fieldCode            = "code"
+	fieldMessage         = "message"
+	fieldInputRequests   = "inputRequests"
+	fieldInputResponses  = "inputResponses"
 )
 
 // Re-export core types for convenience
@@ -244,15 +258,24 @@ var (
 // Completion types for autocomplete support
 type CompletionRef = server.CompletionRef
 type CompletionArgument = server.CompletionArgument
+type CompletionContext = server.CompletionContext
 type CompletionResult = server.CompletionResult
 type CompletionHandler = server.CompletionHandler
+
+var (
+	ContextWithCompletionContext = server.ContextWithCompletionContext
+	CompletionContextFromContext = server.CompletionContextFromContext
+)
 
 // Resource template types
 type ResourceTemplateInfo = server.ResourceTemplateInfo
 
-// Task-augmented request types (MCP 2025-11-25). Declare a tool's task support
-// with .TaskSupport(mcp.TaskSupportOptional); clients augment tools/call with a
-// task and poll tasks/get / tasks/result.
+// Task-augmented request types (MCP 2025-11-25 / tasks extension). Declare a
+// tool's task support with .TaskSupport(mcp.TaskSupportOptional|Required).
+// Legacy clients may send `task` on tools/call and poll tasks/get plus
+// tasks/result. On the modern path Required tools return an unsolicited handle
+// (the per-request `task` field is ignored) and clients poll tasks/get for the
+// inlined result.
 type AugTask = server.AugTask
 type TaskSupport = server.TaskSupport
 
@@ -363,9 +386,14 @@ var (
 	DefaultCORSConfig = transport.DefaultCORSConfig
 	WithCORS          = transport.WithCORS
 	WithDefaultCORS   = transport.WithDefaultCORS
-	// WithStreamable enables the modern Streamable HTTP transport (MCP
-	// 2025-03-26): a single /mcp endpoint with Mcp-Session-Id and GET SSE.
-	WithStreamable = transport.WithStreamable
+	// WithStreamable enables Streamable HTTP on /mcp. As of v1.24.0 this is
+	// the stateless (MCP 2026-07-28) model. ServeHTTP applies it by default.
+	WithStreamable          = transport.WithStreamable
+	WithStreamableStateful  = transport.WithStreamableStateful
+	WithStreamableStateless = transport.WithStreamableStateless
+	// WithLegacyHTTP restores the pre-Streamable POST /mcp + GET /mcp/sse
+	// transport. Use this to opt out of the ServeHTTP Streamable default.
+	WithLegacyHTTP = transport.WithLegacyHTTP
 )
 
 // Shutdown configuration for HTTP transports.
@@ -406,8 +434,8 @@ func WithLogger(l Logger) ServeOption {
 
 // ToolFilterFunc decides whether a tool should be visible to (and
 // callable by) the caller represented by ctx. Returning false hides
-// the tool from tools/list AND causes tools/call to fail with a
-// not-found error, so the filter is the authoritative contract
+// the tool from tools/list AND causes tools/call to fail with
+// Invalid params (-32602), so the filter is the authoritative contract
 // rather than a display-only layer.
 //
 // When the predicate needs to vary by client, attach a caller value to the
@@ -492,9 +520,13 @@ func ServeStdio(ctx context.Context, srv *Server, opts ...ServeOption) error {
 	return t.Serve(ctx, handler)
 }
 
-// ServeHTTP runs the server using HTTP transport with SSE support.
-// This blocks until the context is canceled or an error occurs.
+// ServeHTTP runs the server using Streamable HTTP (the MCP HTTP transport
+// since 2025-03-26). The default is the stateless 2026-07-28 model
+// (WithStreamable). Pass WithStreamableStateful for session-negotiated
+// Streamable HTTP, or WithLegacyHTTP for the retired POST /mcp + GET /mcp/sse
+// split. This blocks until the context is canceled or an error occurs.
 func ServeHTTP(ctx context.Context, srv *Server, addr string, opts ...HTTPOption) error {
+	opts = prependStreamableDefault(opts)
 	t := transport.NewHTTP(addr, opts...)
 	wireResourceSubscriptions(srv, t)
 	handler := newRequestHandler(srv)
@@ -503,10 +535,19 @@ func ServeHTTP(ctx context.Context, srv *Server, addr string, opts ...HTTPOption
 
 // ServeHTTPWithMiddleware runs the server using HTTP transport with middleware support.
 func ServeHTTPWithMiddleware(ctx context.Context, srv *Server, addr string, httpOpts []HTTPOption, serveOpts ...ServeOption) error {
+	httpOpts = prependStreamableDefault(httpOpts)
 	t := transport.NewHTTP(addr, httpOpts...)
 	wireResourceSubscriptions(srv, t)
 	handler := newRequestHandler(srv, serveOpts...)
 	return t.Serve(ctx, handler)
+}
+
+// prependStreamableDefault makes Streamable HTTP the ServeHTTP default while
+// letting a later option (WithStreamableStateful, WithLegacyHTTP) override it.
+func prependStreamableDefault(opts []HTTPOption) []HTTPOption {
+	out := make([]HTTPOption, 0, len(opts)+1)
+	out = append(out, transport.WithStreamable())
+	return append(out, opts...)
 }
 
 // wireResourceSubscriptions connects the HTTP transport's server-push and
@@ -765,6 +806,7 @@ func (h *requestHandler) methodHandlers() map[string]func(context.Context, *prot
 		protocol.MethodTasksUpdate:            h.handleTasksUpdate,
 		protocol.MethodServerDiscover:         h.handleServerDiscover,
 		protocol.MethodSubscriptionsListen:    h.handleSubscriptionsListen,
+		protocol.MethodElicitationComplete:    h.handleElicitationComplete,
 	}
 }
 
@@ -793,11 +835,15 @@ func (h *requestHandler) handle(ctx context.Context, req *protocol.Request) (*pr
 		}
 		// The stateless 2026-07-28 redesign retires the initialize/ping lifecycle,
 		// logging/setLevel, resources subscribe/unsubscribe, the roots list-changed
-		// notification, and tasks/list. Those methods stay for negotiated
-		// <=2025-11-25 sessions (which never reach this path); a modern caller gets
-		// MethodNotFound. See retiredInModern for the rationale per method.
+		// notification, tasks/list, tasks/result, and elicitation/complete. Those
+		// methods stay for negotiated <=2025-11-25 sessions (which never reach this
+		// path); a modern caller gets MethodNotFound. See retiredInModern.
 		if retiredInModern[req.Method] {
 			return nil, h.publicError(req, protocol.NewMethodNotFound(req.Method))
+		}
+	} else if session := server.SessionFromContext(ctx); session != nil {
+		if v := session.ProtocolVersion(); v != "" {
+			ctx = protocol.ContextWithProtocolVersion(ctx, v)
 		}
 	}
 
@@ -820,6 +866,7 @@ func (h *requestHandler) handle(ctx context.Context, req *protocol.Request) (*pr
 	if modern {
 		withResultType(resp)
 		h.applyCacheHint(req.Method, resp)
+		h.withServerInfoMeta(ctx, resp)
 	}
 	return resp, nil
 }
@@ -931,18 +978,21 @@ func (h *requestHandler) handleInitialize(ctx context.Context, req *protocol.Req
 	// with our preferred version and let the client decide whether to proceed.
 	negotiatedVersion := protocol.NegotiateVersion(params.ProtocolVersion)
 
-	// Record the client's advertised capabilities on the session (when a
-	// transport has attached one) so feature gating (sampling, elicitation)
-	// can consult them later in the connection.
-	if session := server.SessionFromContext(ctx); session != nil && len(params.Capabilities) > 0 {
-		session.SetClientCapabilitiesJSON(params.Capabilities)
+	// Record the client's advertised capabilities and negotiated version on the
+	// session (when a transport has attached one) so feature gating and
+	// era-specific serialization (icons) can consult them later.
+	if session := server.SessionFromContext(ctx); session != nil {
+		session.SetProtocolVersion(negotiatedVersion)
+		if len(params.Capabilities) > 0 {
+			session.SetClientCapabilitiesJSON(params.Capabilities)
+		}
 	}
 
 	capabilities := h.serverCapabilities(manifest)
 
 	result := map[string]any{
 		fieldProtocolVersion: negotiatedVersion,
-		"serverInfo":         serverInfoMap(manifest),
+		"serverInfo":         serverInfoMap(manifest, negotiatedVersion),
 		"capabilities":       capabilities,
 	}
 
@@ -956,7 +1006,7 @@ func (h *requestHandler) handleInitialize(ctx context.Context, req *protocol.Req
 
 // serverInfoMap builds the serverInfo/implementation object shared by
 // initialize and server/discover.
-func serverInfoMap(manifest server.Manifest) map[string]any {
+func serverInfoMap(manifest server.Manifest, version string) map[string]any {
 	serverInfo := map[string]any{
 		fieldName:    manifest.Name,
 		fieldVersion: manifest.Version,
@@ -971,7 +1021,7 @@ func serverInfoMap(manifest server.Manifest) map[string]any {
 		serverInfo["websiteUrl"] = manifest.WebsiteURL
 	}
 	if len(manifest.Icons) > 0 {
-		serverInfo["icons"] = manifest.Icons
+		serverInfo["icons"] = server.IconsForProtocol(manifest.Icons, version)
 	}
 	if manifest.BuildInfo != nil {
 		serverInfo["buildInfo"] = manifest.BuildInfo // extension field, not in MCP spec
@@ -996,28 +1046,105 @@ func (h *requestHandler) extensionsMap() map[string]any {
 // replacement for the initialize handshake. It reports the server's supported
 // protocol versions, capabilities (including the extensions map), and identity
 // in a single cacheable result.
-func (h *requestHandler) handleServerDiscover(_ context.Context, req *protocol.Request) (*protocol.Response, error) {
+func (h *requestHandler) handleServerDiscover(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	manifest := h.srv.Manifest()
 	capabilities := h.serverCapabilities(manifest)
 	capabilities["extensions"] = h.extensionsMap()
 
-	supported := make([]string, 0, len(protocol.SupportedVersions)+1)
-	supported = append(supported, protocol.DraftVersion)
-	supported = append(supported, protocol.SupportedVersions...)
-
 	result := map[string]any{
 		"resultType":        protocol.ResultTypeComplete,
-		"supportedVersions": supported,
+		"supportedVersions": slices.Clone(protocol.SupportedVersions),
 		"capabilities":      capabilities,
-		"serverInfo":        serverInfoMap(manifest),
+		"serverInfo":        serverInfoMap(manifest, protocolVersionFrom(ctx)),
 	}
 	if instructions := h.srv.Instructions(); instructions != "" {
 		result["instructions"] = instructions
 	}
+	ttlMs, scope, ok := h.srv.ResultCache()
+	if !ok {
+		ttlMs, scope = defaultCacheTTLMs, defaultCacheScope
+	}
+	result["ttlMs"] = ttlMs
+	if scope != "" {
+		result["cacheScope"] = scope
+	}
+	result["_meta"] = map[string]any{
+		protocol.MetaKeyServerInfo: serverInfoMap(manifest, protocolVersionFrom(ctx)),
+	}
 	return protocol.NewResponse(req.ID, result), nil
 }
 
+// defaultListPageSize is the MCP list-method page size. Cursor pagination is
+// a spec SHOULD; 100 matches the completion-values cap and tasks/list.
+const defaultListPageSize = 100
+
+func protocolVersionFrom(ctx context.Context) string {
+	if v := protocol.ProtocolVersionFromContext(ctx); v != "" {
+		return v
+	}
+	if sess := server.SessionFromContext(ctx); sess != nil {
+		if v := sess.ProtocolVersion(); v != "" {
+			return v
+		}
+	}
+	return protocol.MCPVersion
+}
+
+func isModern(ctx context.Context) bool {
+	return protocol.IsModernVersion(protocolVersionFrom(ctx))
+}
+
+func parseListCursor(params json.RawMessage) (string, error) {
+	if len(params) == 0 {
+		return "", nil
+	}
+	var p struct {
+		Cursor string `json:"cursor"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return "", protocol.NewInvalidParams(err.Error())
+	}
+	return p.Cursor, nil
+}
+
+func paginate[T any](items []T, cursor string, key func(T) string) ([]T, string, error) {
+	start := 0
+	if cursor != "" {
+		found := false
+		for i, item := range items {
+			if key(item) == cursor {
+				start = i + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, "", protocol.NewInvalidParams("invalid cursor")
+		}
+	}
+	if start >= len(items) {
+		return items[start:], "", nil
+	}
+	end := start + defaultListPageSize
+	if end >= len(items) {
+		return items[start:], "", nil
+	}
+	page := items[start:end]
+	return page, key(page[len(page)-1]), nil
+}
+
+func withNextCursor(result map[string]any, next string) {
+	if next != "" {
+		result["nextCursor"] = next
+	}
+}
+
 func (h *requestHandler) handleToolsList(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	cursor, err := parseListCursor(req.Params)
+	if err != nil {
+		return nil, err
+	}
+
 	tools := h.srv.Tools()
 
 	// Sort by name so tools/list returns a deterministic order on every call
@@ -1027,11 +1154,21 @@ func (h *requestHandler) handleToolsList(ctx context.Context, req *protocol.Requ
 		return cmp.Compare(a.Name, b.Name)
 	})
 
-	toolList := make([]map[string]any, 0, len(tools))
+	filtered := make([]server.ToolInfo, 0, len(tools))
 	for _, t := range tools {
 		if h.toolFilter != nil && !h.toolFilter(ctx, t.Name) {
 			continue
 		}
+		filtered = append(filtered, t)
+	}
+	page, next, err := paginate(filtered, cursor, func(t server.ToolInfo) string { return t.Name })
+	if err != nil {
+		return nil, err
+	}
+
+	ver := protocolVersionFrom(ctx)
+	toolList := make([]map[string]any, 0, len(page))
+	for _, t := range page {
 		item := map[string]any{
 			fieldName:     t.Name,
 			"description": t.Description,
@@ -1048,7 +1185,7 @@ func (h *requestHandler) handleToolsList(ctx context.Context, req *protocol.Requ
 			item["annotations"] = t.Annotations
 		}
 		if len(t.Icons) > 0 {
-			item["icons"] = t.Icons
+			item["icons"] = server.IconsForProtocol(t.Icons, ver)
 		}
 		// execution.taskSupport (MCP 2025-11-25): advertise only when the tool
 		// opts in, so a plain tool's listing is unchanged.
@@ -1064,7 +1201,7 @@ func (h *requestHandler) handleToolsList(ctx context.Context, req *protocol.Requ
 	result := map[string]any{
 		"tools": toolList,
 	}
-
+	withNextCursor(result, next)
 	return protocol.NewResponse(req.ID, result), nil
 }
 
@@ -1097,6 +1234,33 @@ func reconcileTaskSupport(mode server.TaskSupport, augmented bool, name string) 
 	return nil
 }
 
+// resolveTaskAugmentation reports whether this tools/call should run as a task.
+// On the modern path the CallToolRequest.task field is retired (SEP-2663):
+// servers MUST ignore it. A TaskSupportRequired tool is always a task
+// (unsolicited handle); optional tools run synchronously unless the server
+// chooses otherwise. Legacy initialize-era callers keep the 2025-11-25
+// per-request opt-in.
+func resolveTaskAugmentation(ctx context.Context, mode server.TaskSupport, name string, hasTaskField bool) (bool, error) {
+	if isModern(ctx) {
+		if mode == server.TaskSupportRequired {
+			if err := requireTasksExtension(ctx); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+		return false, nil
+	}
+	return hasTaskField, reconcileTaskSupport(mode, hasTaskField, name)
+}
+
+func requireTasksExtension(ctx context.Context) error {
+	sess := server.SessionFromContext(ctx)
+	if sess != nil && sess.HasExtension(protocol.ExtensionTasks) {
+		return nil
+	}
+	return protocol.NewMissingRequiredExtension(protocol.ExtensionTasks)
+}
+
 // startAugmentedToolCall runs a tools/call as a background task and returns the
 // CreateTaskResult immediately. The closure runs the tool and builds its normal
 // response so tasks/result returns exactly what a plain call would have.
@@ -1125,6 +1289,9 @@ func (h *requestHandler) startAugmentedToolCall(ctx context.Context, req *protoc
 	if err != nil {
 		return nil, err
 	}
+	if isModern(ctx) {
+		return protocol.NewResponse(req.ID, modernCreateTaskResult(task)), nil
+	}
 	return protocol.NewResponse(req.ID, map[string]any{fieldTask: task}), nil
 }
 
@@ -1146,16 +1313,14 @@ func (h *requestHandler) handleToolsCall(ctx context.Context, req *protocol.Requ
 	// the authorisation contract callers rely on.
 	tool, ok := h.srv.GetTool(params.Name)
 	if !ok {
-		return nil, protocol.NewNotFound("tool not found: " + params.Name)
+		return nil, protocol.NewInvalidParams("tool not found: " + params.Name)
 	}
 	if h.toolFilter != nil && !h.toolFilter(ctx, params.Name) {
-		return nil, protocol.NewNotFound("tool not found: " + params.Name)
+		return nil, protocol.NewInvalidParams("tool not found: " + params.Name)
 	}
 
-	// Task augmentation (MCP 2025-11-25): reconcile the request against the
-	// tool's execution.taskSupport before executing.
-	augmented := params.Task != nil
-	if err := reconcileTaskSupport(tool.TaskSupport(), augmented, params.Name); err != nil {
+	augmented, err := resolveTaskAugmentation(ctx, tool.TaskSupport(), params.Name, params.Task != nil)
+	if err != nil {
 		return nil, err
 	}
 
@@ -1180,8 +1345,8 @@ func (h *requestHandler) handleToolsCall(ctx context.Context, req *protocol.Requ
 	}
 
 	// Task-augmented call: accept immediately, run in the background, and return
-	// a CreateTaskResult. The requestor then polls tasks/get and fetches the
-	// outcome via tasks/result.
+	// a CreateTaskResult. The requestor then polls tasks/get (modern inlines
+	// the terminal result; legacy fetches it via tasks/result).
 	if augmented {
 		var ttl *int64
 		if params.Task != nil {
@@ -1294,13 +1459,34 @@ func applyStructuredResult(response map[string]any, v *server.StructuredResult) 
 }
 
 func (h *requestHandler) handleResourcesList(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
-	resources := h.srv.Resources()
+	cursor, err := parseListCursor(req.Params)
+	if err != nil {
+		return nil, err
+	}
 
-	resourceList := make([]map[string]any, 0, len(resources))
+	resources := h.srv.Resources()
+	filtered := make([]server.ResourceInfo, 0, len(resources))
 	for _, r := range resources {
+		// URI templates belong in resources/templates/list, not resources/list.
+		if server.IsURITemplate(r.URITemplate) {
+			continue
+		}
 		if h.resourceFilter != nil && !h.resourceFilter(ctx, r.URITemplate, r.Name) {
 			continue
 		}
+		filtered = append(filtered, r)
+	}
+	slices.SortFunc(filtered, func(a, b server.ResourceInfo) int {
+		return cmp.Compare(a.URITemplate, b.URITemplate)
+	})
+	page, next, err := paginate(filtered, cursor, func(r server.ResourceInfo) string { return r.URITemplate })
+	if err != nil {
+		return nil, err
+	}
+
+	ver := protocolVersionFrom(ctx)
+	resourceList := make([]map[string]any, 0, len(page))
+	for _, r := range page {
 		item := map[string]any{
 			fieldURI:  r.URITemplate,
 			fieldName: r.Name,
@@ -1318,7 +1504,7 @@ func (h *requestHandler) handleResourcesList(ctx context.Context, req *protocol.
 			item["annotations"] = r.Annotations
 		}
 		if len(r.Icons) > 0 {
-			item["icons"] = r.Icons
+			item["icons"] = server.IconsForProtocol(r.Icons, ver)
 		}
 		resourceList = append(resourceList, item)
 	}
@@ -1326,7 +1512,7 @@ func (h *requestHandler) handleResourcesList(ctx context.Context, req *protocol.
 	result := map[string]any{
 		"resources": resourceList,
 	}
-
+	withNextCursor(result, next)
 	return protocol.NewResponse(req.ID, result), nil
 }
 
@@ -1363,20 +1549,26 @@ func (h *requestHandler) handleResourcesRead(ctx context.Context, req *protocol.
 
 	result := map[string]any{
 		"contents": []map[string]any{
-			{
-				fieldURI:   content.URI,
-				"mimeType": content.MimeType,
-				fieldText:  content.Text,
-			},
+			resourceContentItem(content),
 		},
 	}
 
-	// Include blob if present
-	if content.Blob != "" {
-		result["contents"].([]map[string]any)[0]["blob"] = content.Blob
-	}
-
 	return protocol.NewResponse(req.ID, result), nil
+}
+
+// resourceContentItem builds a resources/read contents entry. The spec requires
+// text XOR blob: a blob-only resource must not also carry an empty text field.
+func resourceContentItem(content *server.ResourceContent) map[string]any {
+	item := map[string]any{fieldURI: content.URI}
+	if content.MimeType != "" {
+		item["mimeType"] = content.MimeType
+	}
+	if content.Blob != "" {
+		item["blob"] = content.Blob
+		return item
+	}
+	item[fieldText] = content.Text
+	return item
 }
 
 func (h *requestHandler) handleResourcesSubscribe(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
@@ -1442,8 +1634,9 @@ func (h *requestHandler) handleSubscriptionsListen(ctx context.Context, req *pro
 	}
 
 	var params struct {
-		Notifications []string `json:"notifications"`
-		URIs          []string `json:"uris"`
+		Notifications json.RawMessage `json:"notifications"`
+		URIs          []string        `json:"uris"`
+		TaskIDs       []string        `json:"taskIds"`
 	}
 	if len(req.Params) > 0 {
 		if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -1460,21 +1653,62 @@ func (h *requestHandler) handleSubscriptionsListen(ctx context.Context, req *pro
 		session.Subscribe(uri)
 	}
 
+	taskIDs := append([]string(nil), params.TaskIDs...)
+	taskIDs = append(taskIDs, parseListenTaskIDs(params.Notifications)...)
+	if len(taskIDs) > 0 {
+		if err := requireTasksExtension(ctx); err != nil {
+			return nil, err
+		}
+	}
+
 	id, err := newSubscriptionID()
 	if err != nil {
 		return nil, err
 	}
+	for _, taskID := range taskIDs {
+		h.srv.SubscribeTask(id, taskID)
+	}
 	return protocol.NewResponse(req.ID, map[string]any{"subscriptionId": id}), nil
 }
 
-func (h *requestHandler) handlePromptsList(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
-	prompts := h.srv.Prompts()
+func parseListenTaskIDs(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var obj struct {
+		TaskIDs []string `json:"taskIds"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	return obj.TaskIDs
+}
 
-	promptList := make([]map[string]any, 0, len(prompts))
+func (h *requestHandler) handlePromptsList(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	cursor, err := parseListCursor(req.Params)
+	if err != nil {
+		return nil, err
+	}
+
+	prompts := h.srv.Prompts()
+	filtered := make([]server.PromptInfo, 0, len(prompts))
 	for _, p := range prompts {
 		if h.promptFilter != nil && !h.promptFilter(ctx, p.Name) {
 			continue
 		}
+		filtered = append(filtered, p)
+	}
+	slices.SortFunc(filtered, func(a, b server.PromptInfo) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+	page, next, err := paginate(filtered, cursor, func(p server.PromptInfo) string { return p.Name })
+	if err != nil {
+		return nil, err
+	}
+
+	ver := protocolVersionFrom(ctx)
+	promptList := make([]map[string]any, 0, len(page))
+	for _, p := range page {
 		item := map[string]any{
 			fieldName: p.Name,
 		}
@@ -1502,7 +1736,7 @@ func (h *requestHandler) handlePromptsList(ctx context.Context, req *protocol.Re
 			item["annotations"] = p.Annotations
 		}
 		if len(p.Icons) > 0 {
-			item["icons"] = p.Icons
+			item["icons"] = server.IconsForProtocol(p.Icons, ver)
 		}
 		promptList = append(promptList, item)
 	}
@@ -1510,7 +1744,7 @@ func (h *requestHandler) handlePromptsList(ctx context.Context, req *protocol.Re
 	result := map[string]any{
 		"prompts": promptList,
 	}
-
+	withNextCursor(result, next)
 	return protocol.NewResponse(req.ID, result), nil
 }
 
@@ -1529,10 +1763,10 @@ func (h *requestHandler) handlePromptsGet(ctx context.Context, req *protocol.Req
 	// see it, you can't reach it".
 	prompt, ok := h.srv.GetPrompt(params.Name)
 	if !ok {
-		return nil, protocol.NewNotFound("prompt not found: " + params.Name)
+		return nil, protocol.NewInvalidParams("prompt not found: " + params.Name)
 	}
 	if h.promptFilter != nil && !h.promptFilter(ctx, params.Name) {
-		return nil, protocol.NewNotFound("prompt not found: " + params.Name)
+		return nil, protocol.NewInvalidParams("prompt not found: " + params.Name)
 	}
 
 	// Execute prompt. Protocol errors pass through; other errors are returned
@@ -1575,11 +1809,13 @@ func (h *requestHandler) handleCompletion(ctx context.Context, req *protocol.Req
 	var params struct {
 		Ref      server.CompletionRef      `json:"ref"`
 		Argument server.CompletionArgument `json:"argument"`
+		Context  server.CompletionContext  `json:"context"`
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return nil, protocol.NewInvalidParams(err.Error())
 	}
 
+	ctx = server.ContextWithCompletionContext(ctx, params.Context)
 	result, err := h.srv.HandleCompletion(ctx, params.Ref, params.Argument)
 	if err != nil {
 		var mcpErr *protocol.Error
@@ -1619,12 +1855,30 @@ func (h *requestHandler) handleLoggingSetLevel(ctx context.Context, req *protoco
 // handleResourcesTemplatesList serves resources/templates/list, exposing the
 // URI-template resources the server registered.
 func (h *requestHandler) handleResourcesTemplatesList(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	cursor, err := parseListCursor(req.Params)
+	if err != nil {
+		return nil, err
+	}
+
 	templates := h.srv.ResourceTemplates()
-	list := make([]map[string]any, 0, len(templates))
+	filtered := make([]server.ResourceTemplateInfo, 0, len(templates))
 	for _, t := range templates {
 		if h.resourceFilter != nil && !h.resourceFilter(ctx, t.URITemplate, t.Name) {
 			continue
 		}
+		filtered = append(filtered, t)
+	}
+	slices.SortFunc(filtered, func(a, b server.ResourceTemplateInfo) int {
+		return cmp.Compare(a.URITemplate, b.URITemplate)
+	})
+	page, next, err := paginate(filtered, cursor, func(t server.ResourceTemplateInfo) string { return t.URITemplate })
+	if err != nil {
+		return nil, err
+	}
+
+	ver := protocolVersionFrom(ctx)
+	list := make([]map[string]any, 0, len(page))
+	for _, t := range page {
 		item := map[string]any{
 			"uriTemplate": t.URITemplate,
 			fieldName:     t.Name,
@@ -1642,18 +1896,38 @@ func (h *requestHandler) handleResourcesTemplatesList(ctx context.Context, req *
 			item["annotations"] = t.Annotations
 		}
 		if len(t.Icons) > 0 {
-			item["icons"] = t.Icons
+			item["icons"] = server.IconsForProtocol(t.Icons, ver)
 		}
 		list = append(list, item)
 	}
-	return protocol.NewResponse(req.ID, map[string]any{"resourceTemplates": list}), nil
+	result := map[string]any{"resourceTemplates": list}
+	withNextCursor(result, next)
+	return protocol.NewResponse(req.ID, result), nil
 }
 
-// relatedTaskMeta is the _meta key that associates a message with its task.
-const relatedTaskMetaKey = "io.modelcontextprotocol/related-task"
+// handleElicitationComplete processes notifications/elicitation/complete
+// (MCP 2025-11-25 URL-mode elicitation). It is a notification, so it returns
+// no response body.
+func (h *requestHandler) handleElicitationComplete(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	var params struct {
+		ElicitationID string `json:"elicitationId"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return nil, protocol.NewInvalidParams(err.Error())
+	}
+	if params.ElicitationID == "" {
+		return nil, protocol.NewInvalidParams("elicitationId is required")
+	}
+	if session := server.SessionFromContext(ctx); session != nil {
+		session.NotifyElicitationComplete(params.ElicitationID)
+	}
+	return nil, nil
+}
 
-// handleTasksGet serves tasks/get: return the task's current state.
-func (h *requestHandler) handleTasksGet(_ context.Context, req *protocol.Request) (*protocol.Response, error) {
+// handleTasksGet serves tasks/get: return the task's current state. On the
+// modern path the response is a DetailedTask (ttlMs/pollIntervalMs, inlined
+// result or error when terminal) with resultType "complete".
+func (h *requestHandler) handleTasksGet(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	var params struct {
 		TaskID string `json:"taskId"`
 	}
@@ -1663,6 +1937,12 @@ func (h *requestHandler) handleTasksGet(_ context.Context, req *protocol.Request
 	task, ok := h.srv.GetAugTask(params.TaskID)
 	if !ok {
 		return nil, protocol.NewInvalidParams("task not found: " + params.TaskID)
+	}
+	if err := requireTasksIfModern(ctx); err != nil {
+		return nil, err
+	}
+	if isModern(ctx) {
+		return protocol.NewResponse(req.ID, server.TaskNotificationParams(task)), nil
 	}
 	return protocol.NewResponse(req.ID, task), nil
 }
@@ -1706,17 +1986,24 @@ func (h *requestHandler) handleTasksResult(ctx context.Context, req *protocol.Re
 }
 
 // handleTasksCancel serves tasks/cancel.
-func (h *requestHandler) handleTasksCancel(_ context.Context, req *protocol.Request) (*protocol.Response, error) {
+func (h *requestHandler) handleTasksCancel(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	var params struct {
 		TaskID string `json:"taskId"`
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return nil, protocol.NewInvalidParams(err.Error())
 	}
+	if err := requireTasksIfModern(ctx); err != nil {
+		return nil, err
+	}
 	task, err := h.srv.CancelAugTask(params.TaskID)
 	if err != nil {
 		// Both unknown-task and already-terminal map to -32602 per spec.
 		return nil, protocol.NewInvalidParams(err.Error())
+	}
+	if isModern(ctx) {
+		// SEP-2663: cancel acknowledges with an empty result.
+		return protocol.NewResponse(req.ID, map[string]any{}), nil
 	}
 	return protocol.NewResponse(req.ID, task), nil
 }
@@ -1724,19 +2011,65 @@ func (h *requestHandler) handleTasksCancel(_ context.Context, req *protocol.Requ
 // handleTasksUpdate serves tasks/update (MCP 2026-07-28 tasks extension): refresh
 // a non-terminal task's ttl so a slow task is not evicted before it finishes. A
 // null ttl clears the deadline. Unknown/terminal tasks map to -32602.
-func (h *requestHandler) handleTasksUpdate(_ context.Context, req *protocol.Request) (*protocol.Response, error) {
+func (h *requestHandler) handleTasksUpdate(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	var params struct {
-		TaskID string `json:"taskId"`
-		TTL    *int64 `json:"ttl"`
+		TaskID         string          `json:"taskId"`
+		TTL            *int64          `json:"ttl"`
+		TTLMs          *int64          `json:"ttlMs"`
+		InputResponses json.RawMessage `json:"inputResponses"`
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return nil, protocol.NewInvalidParams(err.Error())
 	}
-	task, err := h.srv.UpdateAugTask(params.TaskID, params.TTL)
+	if err := requireTasksIfModern(ctx); err != nil {
+		return nil, err
+	}
+	responses, err := parseTaskInputResponses(params.InputResponses)
 	if err != nil {
 		return nil, protocol.NewInvalidParams(err.Error())
 	}
+	ttl := params.TTLMs
+	if ttl == nil {
+		ttl = params.TTL
+	}
+	task, err := h.srv.ApplyAugTaskInput(params.TaskID, responses, ttl)
+	if err != nil {
+		return nil, protocol.NewInvalidParams(err.Error())
+	}
+	if isModern(ctx) {
+		return protocol.NewResponse(req.ID, map[string]any{}), nil
+	}
 	return protocol.NewResponse(req.ID, task), nil
+}
+
+func requireTasksIfModern(ctx context.Context) error {
+	if !isModern(ctx) {
+		return nil
+	}
+	return requireTasksExtension(ctx)
+}
+
+func parseTaskInputResponses(raw json.RawMessage) ([]server.InputResponse, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if raw[0] == '[' {
+		var arr []server.InputResponse
+		if err := json.Unmarshal(raw, &arr); err != nil {
+			return nil, err
+		}
+		return arr, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	out := make([]server.InputResponse, 0, len(m))
+	for id, payload := range m {
+		out = append(out, server.InputResponse{ID: id, Payload: payload})
+	}
+	return out, nil
 }
 
 // handleTasksList serves tasks/list with cursor pagination.
@@ -1764,8 +2097,48 @@ func attachRelatedTask(resp map[string]any, taskID string) {
 	if meta == nil {
 		meta = map[string]any{}
 	}
-	meta[relatedTaskMetaKey] = map[string]any{fieldTaskID: taskID}
+	meta[protocol.MetaKeyRelatedTask] = map[string]any{fieldTaskID: taskID}
 	resp["_meta"] = meta
+}
+
+// modernTaskBase is the 2026-07-28 Task object (flat fields, ttlMs/pollIntervalMs).
+func modernTaskBase(t *server.AugTask) map[string]any {
+	m := map[string]any{
+		fieldTaskID:        t.TaskID,
+		fieldStatus:        string(t.Status),
+		fieldCreatedAt:     t.CreatedAt,
+		fieldLastUpdatedAt: t.LastUpdatedAt,
+		fieldTTLMs:         t.TTL,
+	}
+	if t.StatusMessage != "" {
+		m[fieldStatusMessage] = t.StatusMessage
+	}
+	if t.PollInterval != nil {
+		m[fieldPollIntervalMs] = *t.PollInterval
+	}
+	return m
+}
+
+// modernCreateTaskResult is CreateTaskResult: Result & Task with resultType "task".
+func modernCreateTaskResult(t *server.AugTask) map[string]any {
+	m := modernTaskBase(t)
+	m[fieldResultType] = protocol.ResultTypeTask
+	return m
+}
+
+func jsonRPCErrorMap(err error) map[string]any {
+	if err == nil {
+		return map[string]any{fieldCode: protocol.CodeInternalError, fieldMessage: "task failed"}
+	}
+	var mcpErr *protocol.Error
+	if errors.As(err, &mcpErr) {
+		out := map[string]any{fieldCode: mcpErr.Code, fieldMessage: mcpErr.Message}
+		if mcpErr.Data != nil {
+			out["data"] = mcpErr.Data
+		}
+		return out
+	}
+	return map[string]any{fieldCode: protocol.CodeInternalError, fieldMessage: err.Error()}
 }
 
 // notificationAdapter adapts transport.NotificationSender to server.NotificationSender.

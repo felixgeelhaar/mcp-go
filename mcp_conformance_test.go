@@ -157,12 +157,11 @@ func conformanceCases() []conformanceCase {
 	}
 }
 
-// TestConformance runs the harness against every revision the library claims to
-// support (protocol.SupportedVersions), applying each case whose minVersion the
-// revision has reached. The initialize case is version-aware: it requests the
-// revision under test and asserts the server negotiates (echoes) it back.
+// TestConformance runs the harness against every initialize-era revision
+// (protocol.InitializeVersions). 2026-07-28 retires initialize and is covered
+// by the modern-path tests (mcp_modern_test.go, mcp_discover_test.go).
 func TestConformance(t *testing.T) {
-	for _, rev := range protocol.SupportedVersions {
+	for _, rev := range protocol.InitializeVersions {
 		t.Run(rev, func(t *testing.T) {
 			srv := referenceServer()
 			handler := newRequestHandler(srv)

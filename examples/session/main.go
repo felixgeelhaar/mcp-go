@@ -2,8 +2,8 @@
 //
 // These server-initiated features are deprecated as of MCP 2026-07-28 (still
 // functional for a 12-month window; see docs/deprecations.md for the migrations).
-// The example continues to exercise them intentionally, so the calls below carry
-// //nolint:staticcheck to acknowledge the deprecation rather than hide it.
+// The example continues to exercise them intentionally; each call carries a
+// staticcheck nolint so the deprecation is acknowledged rather than hidden.
 package main
 
 import (

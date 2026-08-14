@@ -109,6 +109,16 @@ func (b *InputBroker) request(kind string, payload json.RawMessage) (json.RawMes
 // HasPending reports whether the handler left any input request unfulfilled.
 func (b *InputBroker) HasPending() bool { return len(b.pending) > 0 }
 
+// Pending returns a copy of the unfulfilled input requests recorded this round.
+func (b *InputBroker) Pending() []InputRequest {
+	if b == nil || len(b.pending) == 0 {
+		return nil
+	}
+	out := make([]InputRequest, len(b.pending))
+	copy(out, b.pending)
+	return out
+}
+
 // Result assembles the InputRequiredResult for the requests the handler could
 // not fulfill this round.
 func (b *InputBroker) Result() InputRequiredResult {

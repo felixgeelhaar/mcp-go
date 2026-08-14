@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+
+	"go.klarlabs.de/mcp/protocol"
 )
 
 // TestIcon_LegacyMarshal asserts that an Icon constructed the legacy
@@ -136,5 +138,31 @@ func TestNewIcon(t *testing.T) {
 	want := Icon{Src: "data://icon"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("NewIcon() = %+v, want %+v", got, want)
+	}
+}
+
+func TestIcon_ForProtocol(t *testing.T) {
+	icon := Icon{URI: "https://example.com/i.png", MimeType: "image/png", Size: 48}
+
+	legacy, ok := icon.ForProtocol(protocol.MCPVersion).(map[string]any)
+	if !ok {
+		t.Fatalf("legacy ForProtocol type %T", icon.ForProtocol(protocol.MCPVersion))
+	}
+	if _, hasURI := legacy["uri"]; !hasURI {
+		t.Errorf("legacy missing uri: %#v", legacy)
+	}
+	if _, hasSrc := legacy["src"]; hasSrc {
+		t.Errorf("legacy must not include src: %#v", legacy)
+	}
+
+	modern, ok := icon.ForProtocol(protocol.ModernVersion).(map[string]any)
+	if !ok {
+		t.Fatalf("modern ForProtocol type %T", icon.ForProtocol(protocol.ModernVersion))
+	}
+	if _, hasSrc := modern["src"]; !hasSrc {
+		t.Errorf("modern missing src: %#v", modern)
+	}
+	if _, hasURI := modern["uri"]; hasURI {
+		t.Errorf("modern must not include uri: %#v", modern)
 	}
 }

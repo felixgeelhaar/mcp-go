@@ -40,8 +40,8 @@ func TestMCPCompliance_Initialize(t *testing.T) {
 		}
 
 		result := resp.Result.(map[string]any)
-		if result["protocolVersion"] != protocol.MCPVersion {
-			t.Errorf("protocolVersion = %v, want %v", result["protocolVersion"], protocol.MCPVersion)
+		if result["protocolVersion"] != "2024-11-05" {
+			t.Errorf("protocolVersion = %v, want 2024-11-05 (echo negotiated version)", result["protocolVersion"])
 		}
 	})
 
@@ -177,8 +177,8 @@ func TestMCPCompliance_Tools(t *testing.T) {
 			t.Fatal("expected error for unknown tool")
 		}
 
-		if resp.Error.Code != protocol.CodeNotFound {
-			t.Errorf("error.code = %d, want %d", resp.Error.Code, protocol.CodeNotFound)
+		if resp.Error.Code != protocol.CodeInvalidParams {
+			t.Errorf("error.code = %d, want %d", resp.Error.Code, protocol.CodeInvalidParams)
 		}
 	})
 }
@@ -192,6 +192,14 @@ func TestMCPCompliance_Resources(t *testing.T) {
 			Resources: true,
 		},
 	})
+
+	srv.Resource("static://info").
+		Name("Info").
+		Description("Static info").
+		MimeType("text/plain").
+		Handler(func(ctx context.Context, uri string, params map[string]string) (*mcp.ResourceContent, error) {
+			return &mcp.ResourceContent{URI: uri, MimeType: "text/plain", Text: "info"}, nil
+		})
 
 	srv.Resource("file://{path}").
 		Name("File").
@@ -224,8 +232,8 @@ func TestMCPCompliance_Resources(t *testing.T) {
 		}
 
 		resource := resources[0].(map[string]any)
-		if resource["name"] != "File" {
-			t.Errorf("resource.name = %v, want %q", resource["name"], "File")
+		if resource["name"] != "Info" {
+			t.Errorf("resource.name = %v, want %q", resource["name"], "Info")
 		}
 	})
 
@@ -572,8 +580,15 @@ func (h *testHandler) handleInitialize(req *protocol.Request) (*protocol.Respons
 		capabilities["prompts"] = map[string]any{}
 	}
 
+	var params struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if len(req.Params) > 0 {
+		_ = json.Unmarshal(req.Params, &params)
+	}
+
 	result := map[string]any{
-		"protocolVersion": manifest.ProtocolVersion,
+		"protocolVersion": protocol.NegotiateVersion(params.ProtocolVersion),
 		"serverInfo": map[string]any{
 			"name":    manifest.Name,
 			"version": manifest.Version,
@@ -607,7 +622,7 @@ func (h *testHandler) handleToolsCall(ctx context.Context, req *protocol.Request
 
 	tool, ok := h.srv.GetTool(params.Name)
 	if !ok {
-		return nil, protocol.NewNotFound("tool not found: " + params.Name)
+		return nil, protocol.NewInvalidParams("tool not found: " + params.Name)
 	}
 
 	result, err := tool.Execute(ctx, params.Arguments)
@@ -637,6 +652,9 @@ func (h *testHandler) handleResourcesList(req *protocol.Request) (*protocol.Resp
 	resources := h.srv.Resources()
 	resourceList := make([]map[string]any, 0, len(resources))
 	for _, r := range resources {
+		if strings.Contains(r.URITemplate, "{") {
+			continue
+		}
 		item := map[string]any{"uri": r.URITemplate, "name": r.Name}
 		if r.Description != "" {
 			item["description"] = r.Description

@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"slices"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -23,11 +22,6 @@ import (
 // once via an initialize handshake. mcp-go is dual-era: a request without the
 // modern `_meta` keys is served under the legacy (session-negotiated) semantics
 // unchanged.
-
-// modernVersions is the set of stateless protocol revisions this server can
-// serve. Kept separate from protocol.SupportedVersions (which drives the legacy
-// initialize handshake) while the modern path is built out.
-var modernVersions = []string{protocol.DraftVersion}
 
 // modernMeta holds the reserved per-request _meta fields of a modern request.
 type modernMeta struct {
@@ -99,27 +93,33 @@ func (h *requestHandler) applyModern(ctx context.Context, method string, m *mode
 	if m.protocolVersion == "" || len(m.clientInfo) == 0 || len(m.clientCaps) == 0 {
 		return ctx, protocol.NewInvalidParams("modern request missing required _meta (protocolVersion, clientInfo, clientCapabilities)")
 	}
-	if method != protocol.MethodServerDiscover && !isModernVersion(m.protocolVersion) {
-		return ctx, protocol.NewUnsupportedProtocolVersion(modernVersions, m.protocolVersion)
+	if method != protocol.MethodServerDiscover && !protocol.IsModernVersion(m.protocolVersion) {
+		return ctx, protocol.NewUnsupportedProtocolVersion([]string{protocol.ModernVersion}, m.protocolVersion)
 	}
 
 	// Build a request-scoped session from the declared capabilities so
 	// per-request feature gating works without any connection state.
 	sess := server.NewSession("modern", nil, transport.NotificationSenderFromContext(ctx))
 	sess.SetClientCapabilitiesJSON(m.clientCaps)
+	sess.SetProtocolVersion(m.protocolVersion)
+	// Log notifications are opt-in per request (SEP-2575): absent logLevel
+	// means the server MUST NOT emit notifications/message for this call.
 	if m.logLevel != "" {
 		sess.SetLogLevel(server.LogLevel(m.logLevel))
+	} else {
+		sess.SetLoggingEnabled(false)
 	}
 	// Attach an MRTR broker so server→client requests (sampling, elicitation,
 	// roots) resolve statelessly: fulfilled from inputResponses on a retry, or
 	// recorded as pending for an input_required result on the first round.
 	sess.SetInputBroker(server.NewInputBroker(m.inputResponses, m.requestState))
 	ctx = withRemoteTraceContext(ctx, m)
+	ctx = protocol.ContextWithProtocolVersion(ctx, m.protocolVersion)
 	return server.ContextWithSession(ctx, sess), nil
 }
 
 // withRemoteTraceContext joins the caller's distributed trace using the W3C
-// Trace Context carried in _meta, so spans started within a handler parent onto
+// Trace Context carried in `_meta`, so spans started within a handler parent onto
 // the client's trace. It uses the globally-registered propagator (a no-op
 // unless the application installed one). When a span is already active on ctx —
 // the OTel tracing middleware runs outside this path and joins the trace itself
@@ -143,10 +143,6 @@ func withRemoteTraceContext(ctx context.Context, m *modernMeta) context.Context 
 		carrier["baggage"] = m.baggage
 	}
 	return otel.GetTextMapPropagator().Extract(ctx, carrier)
-}
-
-func isModernVersion(v string) bool {
-	return slices.Contains(modernVersions, v)
 }
 
 // newSubscriptionID mints a stable, non-empty identifier for a
@@ -198,10 +194,11 @@ func withResultType(resp *protocol.Response) {
 // (server/discover + per-request _meta replace the handshake), logging/setLevel
 // (the log level travels in _meta), the resources subscribe/unsubscribe pair and
 // the roots list-changed notification (subscriptions/listen + MRTR replace
-// them), and tasks/list (the tasks extension favors direct handles). A modern
-// request for any of these gets MethodNotFound. Legacy (<=2025-11-25) callers
-// never enter the modern path, so their initialize/ping back-compat probe is
-// untouched.
+// them), tasks/list (the tasks extension favors direct handles), tasks/result
+// (replaced by polling tasks/get), and notifications/elicitation/complete
+// (MRTR retries replace the URL-mode completion signal). A modern request for
+// any of these gets MethodNotFound. Legacy (<=2025-11-25) callers never enter
+// the modern path, so their initialize/ping back-compat probe is untouched.
 var retiredInModern = map[string]bool{
 	protocol.MethodInitialize:           true,
 	protocol.MethodInitialized:          true,
@@ -211,6 +208,8 @@ var retiredInModern = map[string]bool{
 	protocol.MethodResourcesUnsubscribe: true,
 	protocol.MethodRootsListChanged:     true,
 	protocol.MethodTasksList:            true,
+	protocol.MethodTasksResult:          true,
+	protocol.MethodElicitationComplete:  true,
 }
 
 // cacheableMethods are the read/list operations whose results carry a
@@ -221,18 +220,29 @@ var cacheableMethods = map[string]bool{
 	protocol.MethodResourcesList:          true,
 	protocol.MethodResourcesRead:          true,
 	protocol.MethodResourcesTemplatesList: true,
+	protocol.MethodServerDiscover:         true,
 }
 
-// applyCacheHint stamps ttlMs/cacheScope onto a cacheable modern result when the
-// server has a cache hint configured (WithResultCache). server/discover sets its
-// own hint. A no-op otherwise.
+// defaultCacheTTLMs / defaultCacheScope are the CacheableResult values used
+// when the server has not configured WithResultCache. ttlMs 0 means
+// immediately stale (clients MAY re-fetch every time); cacheScope "private"
+// is the conservative default (do not share across authorization contexts).
+const (
+	defaultCacheTTLMs int64 = 0
+	defaultCacheScope       = "private"
+)
+
+// applyCacheHint stamps ttlMs/cacheScope onto a cacheable modern result.
+// CacheableResult makes both fields required; when WithResultCache is unset
+// the defaults above are used. Existing values on the result are left alone
+// (server/discover stamps its own).
 func (h *requestHandler) applyCacheHint(method string, resp *protocol.Response) {
 	if resp == nil || !cacheableMethods[method] {
 		return
 	}
 	ttlMs, scope, ok := h.srv.ResultCache()
 	if !ok {
-		return
+		ttlMs, scope = defaultCacheTTLMs, defaultCacheScope
 	}
 	if m, mok := resp.Result.(map[string]any); mok {
 		if _, present := m["ttlMs"]; !present {
@@ -244,6 +254,28 @@ func (h *requestHandler) applyCacheHint(method string, resp *protocol.Response) 
 			}
 		}
 	}
+}
+
+// withServerInfoMeta stamps io.modelcontextprotocol/serverInfo onto a modern
+// result's _meta (MCP 2026-07-28: servers SHOULD identify themselves on every
+// response). Existing _meta keys, including a caller-supplied serverInfo, are
+// preserved.
+func (h *requestHandler) withServerInfoMeta(ctx context.Context, resp *protocol.Response) {
+	if resp == nil {
+		return
+	}
+	m, ok := resp.Result.(map[string]any)
+	if !ok {
+		return
+	}
+	meta, _ := m["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	if _, present := meta[protocol.MetaKeyServerInfo]; !present {
+		meta[protocol.MetaKeyServerInfo] = serverInfoMap(h.srv.Manifest(), protocolVersionFrom(ctx))
+	}
+	m["_meta"] = meta
 }
 
 // modernizeError adapts a legacy protocol error to the modern code scheme: the

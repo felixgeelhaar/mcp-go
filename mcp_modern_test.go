@@ -30,6 +30,26 @@ func modernParams(t *testing.T, version string, extra map[string]any) json.RawMe
 	return mustParams(t, p)
 }
 
+func modernTaskCaps() map[string]any {
+	return map[string]any{
+		"extensions":  map[string]any{protocol.ExtensionTasks: map[string]any{}},
+		"elicitation": map[string]any{},
+		"sampling":    map[string]any{},
+	}
+}
+
+func modernTaskParams(t *testing.T, extra map[string]any) json.RawMessage {
+	t.Helper()
+	meta := map[string]any{
+		protocol.MetaKeyProtocolVersion:    protocol.ModernVersion,
+		protocol.MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+		protocol.MetaKeyClientCapabilities: modernTaskCaps(),
+	}
+	p := map[string]any{"_meta": meta}
+	maps.Copy(p, extra)
+	return mustParams(t, p)
+}
+
 // TestModern_ResultTypeStamped verifies that a modern request (carrying the
 // per-request _meta) gets resultType:"complete" stamped on its result.
 func TestModern_ResultTypeStamped(t *testing.T) {
@@ -39,7 +59,7 @@ func TestModern_ResultTypeStamped(t *testing.T) {
 
 	req := &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList,
-		Params: modernParams(t, protocol.DraftVersion, nil),
+		Params: modernParams(t, protocol.ModernVersion, nil),
 	}
 	resp, err := handler.HandleRequest(context.Background(), req)
 	if err != nil {
@@ -87,7 +107,7 @@ func TestModern_ParseTraceContext(t *testing.T) {
 	)
 	params := mustParams(t, map[string]any{
 		"_meta": map[string]any{
-			protocol.MetaKeyProtocolVersion:    protocol.DraftVersion,
+			protocol.MetaKeyProtocolVersion:    protocol.ModernVersion,
 			protocol.MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
 			protocol.MetaKeyClientCapabilities: map[string]any{},
 			protocol.MetaKeyTraceparent:        traceparent,
@@ -119,7 +139,7 @@ func TestModern_ApplyTraceContext(t *testing.T) {
 	srv := NewServer(ServerInfo{Name: "s", Version: "1"})
 	h := newRequestHandler(srv)
 	m := &modernMeta{
-		protocolVersion: protocol.DraftVersion,
+		protocolVersion: protocol.ModernVersion,
 		clientInfo:      json.RawMessage(`{"name":"c","version":"1"}`),
 		clientCaps:      json.RawMessage(`{}`),
 		traceparent:     traceparent,
@@ -151,7 +171,7 @@ func TestModern_ApplyNoTraceContext(t *testing.T) {
 	srv := NewServer(ServerInfo{Name: "s", Version: "1"})
 	h := newRequestHandler(srv)
 	m := &modernMeta{
-		protocolVersion: protocol.DraftVersion,
+		protocolVersion: protocol.ModernVersion,
 		clientInfo:      json.RawMessage(`{"name":"c","version":"1"}`),
 		clientCaps:      json.RawMessage(`{}`),
 	}
@@ -174,7 +194,7 @@ func TestModern_MissingRequiredMeta(t *testing.T) {
 
 	// protocolVersion present (marks it modern) but clientInfo/caps omitted.
 	params := mustParams(t, map[string]any{
-		"_meta": map[string]any{protocol.MetaKeyProtocolVersion: protocol.DraftVersion},
+		"_meta": map[string]any{protocol.MetaKeyProtocolVersion: protocol.ModernVersion},
 	})
 	req := &protocol.Request{JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList, Params: params}
 	_, err := handler.HandleRequest(context.Background(), req)
@@ -194,7 +214,7 @@ func TestModern_CacheHintStamped(t *testing.T) {
 	// Modern tools/list → cache hint present.
 	req := &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList,
-		Params: modernParams(t, protocol.DraftVersion, nil),
+		Params: modernParams(t, protocol.ModernVersion, nil),
 	}
 	resp, _ := handler.HandleRequest(context.Background(), req)
 	res := resp.Result.(map[string]any)
@@ -210,6 +230,53 @@ func TestModern_CacheHintStamped(t *testing.T) {
 	}
 }
 
+// TestModern_DefaultCacheHint verifies CacheableResult fields are always
+// present on modern list results, using the immediately-stale / private
+// defaults when WithResultCache is unset.
+func TestModern_DefaultCacheHint(t *testing.T) {
+	srv := NewServer(ServerInfo{Name: "s", Version: "1"})
+	srv.Tool("t").Handler(func(_ struct{}) (string, error) { return "ok", nil })
+	handler := newRequestHandler(srv)
+
+	req := &protocol.Request{
+		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList,
+		Params: modernParams(t, protocol.ModernVersion, nil),
+	}
+	resp, err := handler.HandleRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	res := resp.Result.(map[string]any)
+	if res["ttlMs"] != defaultCacheTTLMs {
+		t.Errorf("ttlMs = %v, want %d", res["ttlMs"], defaultCacheTTLMs)
+	}
+	if res["cacheScope"] != defaultCacheScope {
+		t.Errorf("cacheScope = %v, want %s", res["cacheScope"], defaultCacheScope)
+	}
+}
+
+// TestModern_ServerInfoMeta verifies modern results identify the server in
+// _meta[io.modelcontextprotocol/serverInfo].
+func TestModern_ServerInfoMeta(t *testing.T) {
+	srv := NewServer(ServerInfo{Name: "ident", Version: "9"})
+	srv.Tool("t").Handler(func(_ struct{}) (string, error) { return "ok", nil })
+	handler := newRequestHandler(srv)
+
+	req := &protocol.Request{
+		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList,
+		Params: modernParams(t, protocol.ModernVersion, nil),
+	}
+	resp, err := handler.HandleRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	meta, _ := resp.Result.(map[string]any)["_meta"].(map[string]any)
+	si, _ := meta[protocol.MetaKeyServerInfo].(map[string]any)
+	if si[fieldName] != "ident" || si[fieldVersion] != "9" {
+		t.Errorf("serverInfo _meta = %#v", si)
+	}
+}
+
 // TestModern_ResourceNotFoundRenumbered verifies a resource-not-found error is
 // -32602 on the modern path (vs -32001 on legacy).
 func TestModern_ResourceNotFoundRenumbered(t *testing.T) {
@@ -218,7 +285,7 @@ func TestModern_ResourceNotFoundRenumbered(t *testing.T) {
 
 	modReq := &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodResourcesRead,
-		Params: modernParams(t, protocol.DraftVersion, map[string]any{"uri": "missing://x"}),
+		Params: modernParams(t, protocol.ModernVersion, map[string]any{"uri": "missing://x"}),
 	}
 	_, err := handler.HandleRequest(context.Background(), modReq)
 	var mcpErr *protocol.Error

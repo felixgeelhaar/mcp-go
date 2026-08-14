@@ -66,7 +66,8 @@ slog.InfoContext(ctx, "starting", "tool", "scan")
 
 `Session.SetLogLevel` / `Session.LogLevel` are **not** deprecated — in the modern
 stateless model the client's desired log level travels in each request's `_meta`
-(`io.modelcontextprotocol/logLevel`) and is applied per request.
+(`io.modelcontextprotocol/logLevel`) and is applied per request. A modern
+request that omits that field does not receive `notifications/message`.
 
 ## Timeline
 
@@ -75,5 +76,7 @@ stateless model the client's desired log level travels in each request's `_meta`
 | Now (v1)             | Deprecated, fully functional. Compiler/tooling warnings only.  |
 | +12 months           | Eligible for removal in a future major (v2).                   |
 
-The stateless request path itself stays opt-in (`WithStreamableStateless`) in
-v1; it is not the default and does not change existing servers.
+The stateless request path is the **default for `ServeHTTP`** (`WithStreamable`,
+MCP 2026-07-28). `stdio` servers and `WithStreamableStateful()` /
+`WithLegacyHTTP()` are unaffected. Deprecated sampling/roots/logging APIs stay
+functional for the 12-month window.

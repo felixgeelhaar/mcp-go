@@ -3,18 +3,41 @@
 Plan to bring mcp-go current across **every** MCP spec revision, from the pinned
 `2024-11-05` baseline through the `2026-07-28` release candidate.
 
-**Status of the world (July 2026):**
+**Status of the world (August 2026):**
 
 | Revision | Role | mcp-go today |
 |---|---|---|
-| `2024-11-05` | original | pinned & hard-returned (no negotiation) |
-| `2025-03-26` | Streamable HTTP, annotations, OAuth 2.1, batching | partial (annotations ✅, transport ❌) |
-| `2025-06-18` | elicitation, structured output, resource links | partial (features ✅, wiring ❌) |
-| `2025-11-25` | **current published** — tasks, icons, sampling-with-tools | partial (tasks unwired) |
-| `2026-07-28` | RC — stateless rewrite | none |
+| `2024-11-05` | original | negotiated via initialize |
+| `2025-03-26` | Streamable HTTP, annotations | certified |
+| `2025-06-18` | elicitation, structured output, resource links | certified |
+| `2025-11-25` | tasks, icons, sampling-with-tools | **initialize default (`MCPVersion`)** |
+| `2026-07-28` | **current published** — stateless rewrite | dual-era: `server/discover` + per-request `_meta`; `ModernVersion` in `SupportedVersions`; initialize does not speak this revision |
 
-The official `modelcontextprotocol/go-sdk` negotiates **all five** revisions and
-ships a `2026-07-28` beta. Closing the version gap is the strategic objective.
+The official spec released `2026-07-28` on that date. mcp-go serves it on the
+modern path and advertises it from `server/discover`. The initialize handshake
+stops at `2025-11-25` because 2026-07-28 retires initialize.
+
+Phases 0–4 of this document shipped across v1.22–v1.25 plus the spec-alignment
+work. Checkboxes below are historical planning notes; treat the status table
+as authoritative.
+
+### Remaining (evaluated)
+
+There is **no `/v2` Go module path**. Phase 4 shipped on v1 (stateless default in v1.24.0; spec-alignment on this branch). A major-version import rewrite is not a planned release.
+
+| Item | Verdict |
+|---|---|
+| OAuth token enforcement, `iss` validation, DCR, CIMD | **Out of library.** Auth stays advertise-only; enforcement belongs at the gateway. RFC 9728 `/.well-known/oauth-protected-resource` is served when discovery OAuth metadata is configured. |
+| JSON-RPC batching | **Closed — will not implement.** Optional in 2025-03-26, removed in 2025-06-18. Never batching is conformant. |
+| `x-mcp-header` → `Mcp-Param-*` (SEP-2243) | **Optional for servers (MAY).** mcp-go does not emit the annotation, so the HTTP client is not required to mirror headers until a listed tool carries it. Follow-up only if we annotate schemas or consume third-party servers that do. `Mcp-Method` / `Mcp-Name` are already enforced. |
+| Unsolicited task handles (SEP-2663) | **In library, modern path.** A `TaskSupportRequired` tool returns a flat `CreateTaskResult` (`resultType: "task"`) on a plain `tools/call` when the client declares `io.modelcontextprotocol/tasks`. The retired `task` field is ignored (optional tools run synchronously). Missing the extension is `-32021`. Legacy callers keep the 2025-11-25 nested `{task: …}` opt-in. |
+| `tasks/result` / `notifications/elicitation/complete` | **Gated off for modern** (`-32601`). Clients poll `tasks/get` (inlined `result`/`error`) and retry the original method under MRTR. Legacy keeps both methods. |
+| `tasks/update` `inputResponses` | **In library.** A task that needs elicitation/sampling/roots pauses at `input_required` with a keyed `inputRequests` map. `tasks/update` accepts map (or array) `inputResponses`, ignores unknown keys, and replays the handler. TTL refresh via `ttl`/`ttlMs` is still accepted. Modern ack is empty. |
+| `notifications/tasks` | **In library.** `subscriptions/listen` accepts `notifications.taskIds` (requires the tasks extension). Status changes push `notifications/tasks` carrying the same DetailedTask as `tasks/get`. |
+| OpenAPI tool descriptors | **Not in library.** Typed Go handlers remain the registration surface. |
+| Roots / Sampling / Logging / HTTP+SSE / `includeContext` thisServer\|allServers | **Deprecated, kept** for the 12-month window. |
+
+Phase 1–3 checkboxes below that are still unmarked were implemented in v1.22–v1.25 (Streamable HTTP, audio, progress `message`, sampling-with-tools, icons, JSON Schema 2020-12, `Implementation.description`, input validation as `isError`). Treat the table above as the live remainder.
 
 ---
 
@@ -23,17 +46,13 @@ ships a `2026-07-28` beta. Closing the version gap is the strategic objective.
 1. **Version negotiation is the backbone.** Every phase gates its behavior on a
    negotiated protocol version. Build the negotiation layer first (Phase 0) so
    later features can be advertised/enabled per revision instead of hard-coded.
-2. **Fix the foundation before adding surface.** The audit found features already
-   written but dead: `completion/complete`, `logging/setLevel`,
-   `resources/templates/list`, and all `tasks/*` are **not wired into the
-   dispatcher** (`mcp.go:672`); no transport injects a `Session` into the request
-   context, so sampling/elicitation/channels are **unreachable**; the bundled
-   HTTP server is old HTTP+SSE with `?clientId=` while the client already speaks
-   Streamable HTTP. Shipping new spec features on top of this is building on sand.
+2. **Fix the foundation before adding surface.** Dead methods, session injection,
+   and Streamable HTTP were the original blockers; they shipped in v1.22–v1.24.
+   Spec-alignment work after that is wire-format and default-behavior correctness.
 3. **Certify one revision per release.** Each phase ends with a conformance test
    suite proving the negotiated revision is fully honored, then bumps the default.
-4. **The stateless `2026-07-28` rewrite is a major version (v2).** Everything
-   before it is additive/back-compatible (v1.x).
+4. **The stateless `2026-07-28` rewrite stays on v1.** Dual-era (initialize through
+   `2025-11-25`, modern via `server/discover` + `_meta`). No `/v2` module path.
 
 **Release mapping (proposed):**
 
@@ -43,39 +62,28 @@ ships a `2026-07-28` beta. Closing the version gap is the strategic objective.
 | 1 | 2025-03-26 | v1.23.0 | no (additive) |
 | 2 | 2025-06-18 | v1.24.0 | batching reversal (guarded) |
 | 3 | 2025-11-25 | v1.25.0 | validation-error channel |
-| 4 | 2026-07-28 RC | **v2.0.0** | yes — stateless rewrite |
+| 4 | 2026-07-28 | **v1.24.0+** | ServeHTTP defaults to stateless Streamable HTTP; no module-path break |
 
 ---
 
 ## Phase 0 — Foundation (v1.22.0, no new spec)
 
 Pure correctness. Make what's already built actually reachable, and stand up the
-negotiation machinery. Highest ROI, lowest risk.
+negotiation machinery. Highest ROI, lowest risk. **Shipped.**
 
-- [ ] **Version negotiation layer.** Add `protocol.SupportedVersions` (ordered).
-  Parse the client's `protocolVersion` in `handleInitialize` (`mcp.go:746`) —
-  today it ignores `req.Params` entirely. Negotiate: echo the client's version if
-  supported, else the newest common one; return
-  `UnsupportedProtocolVersion` when none overlap. Stop hard-returning
-  `protocol.MCPVersion` (`server/server.go:278`).
-- [ ] **Capture client capabilities at initialize.** Parse `capabilities` from
-  initialize params into `ClientCapabilities` (`server/session.go:37`) — currently
-  never populated, which is why elicitation/sampling gating never fires.
-- [ ] **Inject a `Session` into the request context** from stdio/http/ws
-  transports (wire `ContextWithSession`, re-exported at `mcp.go:211` but never
-  called). Unblocks sampling, elicitation, channels, logging notifications.
-- [ ] **Wire the dead methods** into `methodHandlers()` (`mcp.go:672`):
-  `completion/complete` (`server.HandleCompletion`), `logging/setLevel`
-  (`server/logging.go`), `resources/templates/list` (`Server.ResourceTemplates`),
-  `notifications/initialized` (accept & no-op).
-- [ ] **Advertise the `completions` capability** in the initialize response — it's
-  declared (`server/server.go`) but never advertised (`mcp.go:751`).
-- [ ] **Content block refactor.** Replace the three duplicated `Content` structs
-  (`server/sampling.go:24`, `server/prompt.go:9`, `server/tool.go:16`) with one
-  `ContentBlock` union. Prerequisite for audio/resource_link/embedded in later
-  phases. Keep text+image behavior identical.
-- [ ] **Conformance harness.** Table-driven suite that drives a server through the
-  full `2024-11-05` method set over each transport; becomes the per-revision gate.
+- [x] **Version negotiation layer.** `protocol.SupportedVersions` /
+  `InitializeVersions`. `handleInitialize` parses `protocolVersion` and
+  negotiates via `NegotiateVersion`.
+- [x] **Capture client capabilities at initialize.** Parsed into
+  `ClientCapabilities` on the session.
+- [x] **Inject a `Session` into the request context** from stdio/http/ws
+  transports (`ContextWithSession`).
+- [x] **Wire the dead methods** into `methodHandlers()`: `completion/complete`,
+  `logging/setLevel`, `resources/templates/list`, `notifications/initialized`.
+- [x] **Advertise the `completions` capability** in the initialize response.
+- [x] **Content block refactor.** Shared `Content` / `ContentBlock` union
+  (text, image, audio, resource_link).
+- [x] **Conformance harness.** `mcp_conformance_test.go` / `mcp_revisions_test.go`.
 
 ---
 
@@ -92,14 +100,16 @@ Adds the modern transport and the annotation/content surface. Additive.
   exists (`transport/store.go`).
 - [ ] **Audio content** (`type:"audio"`, base64 `data` + `mimeType`) via the new
   `ContentBlock` union.
-- [ ] **JSON-RPC batching** — accept request arrays (added this revision;
-  **removed again in 2025-06-18**, so guard it on negotiated version).
+- [ ] **JSON-RPC batching** — **will not implement.** Optional in this revision
+  and removed in 2025-06-18; never batching is conformant.
 - [ ] **Tool annotations** — already implemented (`server/annotations.go`); add
   conformance coverage.
 - [ ] **`ProgressNotification.message`** field.
-- [ ] **OAuth 2.1 posture** — decision point (see Cross-cutting): document the
+- [x] **OAuth 2.1 posture** — decision point (see Cross-cutting): document the
   gateway-terminated stance and expose the AS-metadata `.well-known` hook, since
-  in-library auth is out of scope by design.
+  in-library auth is out of scope by design. RFC 9728
+  `/.well-known/oauth-protected-resource` is served when discovery OAuth
+  metadata is configured (advertise-only).
 - [ ] Bump negotiated default to `2025-03-26`.
 
 ---
@@ -109,21 +119,21 @@ Adds the modern transport and the annotation/content surface. Additive.
 The last published stable before `2025-11-25`. Mostly already built — this phase
 is about wiring, headers, and the batching reversal.
 
-- [ ] **Reject batching** when the negotiated version is `2025-06-18` (reversal of
-  Phase 1). Version-gated in the wire decoder.
-- [ ] **Enforce `MCP-Protocol-Version` header** on all post-initialize HTTP
+- [ ] **Reject batching** — N/A: this library never accepted request arrays.
+- [x] **Enforce `MCP-Protocol-Version` header** on all post-initialize HTTP
   requests; reject/deprecate missing header per spec.
-- [ ] **Resource links** — `ResourceLink` content block (`type:"resource_link"`)
+- [x] **Resource links** — `ResourceLink` content block (`type:"resource_link"`)
   in tool results (union type from Phase 0).
-- [ ] **Structured output** — already implemented (`OutputSchema`,
+- [x] **Structured output** — already implemented (`OutputSchema`,
   `StructuredResult`); certify.
-- [ ] **`title` fields** — expose top-level `title` on tools/resources/prompts
+- [x] **`title` fields** — expose top-level `title` on tools/resources/prompts
   (currently only on tool annotations); `name` stays the programmatic id.
-- [ ] **`_meta` on more types** (already on tools; extend to resources/prompts).
-- [ ] **Completion `context`** field (previously-resolved argument variables).
-- [ ] **Auth metadata** — Protected Resource Metadata (RFC 9728) advertisement +
+- [x] **`_meta` on more types** (already on tools; extend to resources/prompts).
+- [x] **Completion `context`** field (previously-resolved argument variables).
+- [x] **Auth metadata** — Protected Resource Metadata (RFC 9728) advertisement +
   RFC 8707 Resource Indicator awareness in the discovery doc (advertise-only;
-  enforcement stays at the gateway).
+  enforcement stays at the gateway). The RFC 9728 document is served at
+  `/.well-known/oauth-protected-resource` when OAuth metadata is configured.
 - [ ] Bump negotiated default to `2025-06-18`.
 
 ---
@@ -152,11 +162,11 @@ is about wiring, headers, and the batching reversal.
 
 ---
 
-## Phase 4 — 2026-07-28 Release Candidate (v2.0.0) — stateless rewrite
+## Phase 4 — 2026-07-28 (v1) — stateless rewrite
 
-The largest transition since launch: a ground-up stateless redesign. Ship behind
-an explicit opt-in (`StreamableHTTPOptions.Stateless`, mirroring go-sdk) so v1
-clients keep working, then make it the default in v2.
+The largest transition since launch: a ground-up stateless redesign. Shipped on
+**v1** behind Streamable HTTP (`WithStreamable()` / ServeHTTP default). There is
+no `/v2` module path.
 
 **Lifecycle / methods**
 - [x] Implement **`server/discover`** (advertise supported versions, capabilities,
@@ -218,10 +228,14 @@ clients keep working, then make it the default in v2.
   (`ExtensionUI`) and associates tools via `_meta.ui.resourceUri` (+ the flat
   `_meta["ui/resourceUri"]`, which the spec deprecates for removal before GA — we
   keep emitting it for host compat). Already conformant.
-- [~] Move **Tasks** to the `io.modelcontextprotocol/tasks` extension: polling
+- [x] Move **Tasks** to the `io.modelcontextprotocol/tasks` extension: polling
   `tasks/get`, new `tasks/update`, **remove `tasks/list`**, allow unsolicited task
-  handles. (tasks/update added; tasks/list gated off for modern; extension
-  already advertised. Unsolicited task handles remain.)
+  handles. (tasks/list gated off for modern; extension advertised and required
+  on modern `tasks/*`. `TaskSupportRequired` returns a flat `CreateTaskResult`.
+  `tasks/result` is MethodNotFound. `tasks/get` inlines the terminal result.
+  `tasks/update` fulfills `inputResponses` and replays the handler from
+  `input_required`. `notifications/tasks` is pushed to `subscriptions/listen`
+  streams that opted in via `taskIds`.)
 
 **Auth / errors / deprecations**
 - [~] `iss` validation (RFC 9207); `application_type` in DCR; Client ID Metadata
@@ -246,14 +260,12 @@ clients keep working, then make it the default in v2.
   — the modern log level travels in `_meta`.)
 - [x] Loosen `inputSchema`/`outputSchema` to full JSON Schema 2020-12 (`$ref`,
   `oneOf`/`anyOf`, conditionals).
-- [x] Make `Stateless` the default — shipped in **v1.24.0** (NOT v2.0.0, by
-  decision). `WithStreamable()` now defaults to the stateless (2026-07-28) model
-  (drops `Mcp-Session-Id`, hard-requires `Mcp-Method`); `WithStreamableStateful()`
-  is the opt-out into the legacy session-negotiated (2025-03-26) path. This is a
-  behavior change to the streamable HTTP default, released as a minor because the
-  only consumers are the maintainer's own fleet (all stdio — unaffected) and they
-  upgrade in lockstep; there are no external consumers. The `/v2` module-path tax
-  is intentionally avoided. See CHANGELOG [1.24.0].
+- [x] Make `Stateless` the default — shipped in **v1.24.0**. `WithStreamable()`
+  uses the 2026-07-28 model (drops `Mcp-Session-Id`, hard-requires `Mcp-Method`);
+  `WithStreamableStateful()` is the opt-out into the legacy session-negotiated
+  (2025-03-26) path. Behavior change to the Streamable HTTP default, released as
+  a minor because the only consumers are the maintainer's own fleet (all stdio —
+  unaffected) and they upgrade in lockstep. See CHANGELOG [1.24.0].
 
 ---
 
@@ -277,11 +289,11 @@ clients keep working, then make it the default in v2.
 
 ```
 Phase 0  Foundation ........ wire dead methods, sessions, negotiation   v1.22.0
-Phase 1  2025-03-26 ........ Streamable HTTP, audio, batching, OAuth doc  v1.23.0
-Phase 2  2025-06-18 ........ resource links, headers, batching-off        v1.24.0
-Phase 3  2025-11-25 ........ tasks-wired, icons, sampling-tools  [CURRENT] v1.25.0
-Phase 4  2026-07-28 ........ stateless rewrite, MRTR, extensions          v2.0.0
+Phase 1  2025-03-26 ........ Streamable HTTP, audio, OAuth doc            v1.23.0
+Phase 2  2025-06-18 ........ resource links, headers                      v1.24.0
+Phase 3  2025-11-25 ........ tasks-wired, icons, sampling-tools           v1.25.0
+Phase 4  2026-07-28 ........ stateless rewrite, MRTR, extensions          v1.24.0+
 ```
 
-Phases 0–3 are additive and safe to ship incrementally. Phase 4 is the v2 break;
-gate it behind `Stateless` opt-in until the spec is final (July 28, 2026).
+Phases 0–4 shipped on v1. Dual-era: initialize through `2025-11-25`; modern via
+`server/discover` + per-request `_meta`.

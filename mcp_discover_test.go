@@ -31,8 +31,8 @@ func TestServerDiscover_Shape(t *testing.T) {
 	}
 	// supportedVersions must include the modern draft plus the legacy set.
 	versions := toStrings(res["supportedVersions"])
-	if !slices.Contains(versions, protocol.DraftVersion) {
-		t.Errorf("supportedVersions missing %s: %v", protocol.DraftVersion, versions)
+	if !slices.Contains(versions, protocol.ModernVersion) {
+		t.Errorf("supportedVersions missing %s: %v", protocol.ModernVersion, versions)
 	}
 	if !slices.Contains(versions, "2025-11-25") {
 		t.Errorf("supportedVersions missing legacy 2025-11-25: %v", versions)
@@ -49,6 +49,14 @@ func TestServerDiscover_Shape(t *testing.T) {
 	}
 	if _, ok := caps["tools"]; !ok {
 		t.Errorf("expected tools capability in discover, got %v", caps)
+	}
+	if res["ttlMs"] != defaultCacheTTLMs || res["cacheScope"] != defaultCacheScope {
+		t.Errorf("discover CacheableResult = ttlMs %v cacheScope %v", res["ttlMs"], res["cacheScope"])
+	}
+	meta, _ := res["_meta"].(map[string]any)
+	siMeta, _ := meta[protocol.MetaKeyServerInfo].(map[string]any)
+	if siMeta[fieldName] != "disc" {
+		t.Errorf("_meta serverInfo = %#v", siMeta)
 	}
 }
 

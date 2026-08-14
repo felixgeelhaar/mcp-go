@@ -202,6 +202,7 @@ type Server struct {
 	tasks        *TaskManager
 	augTasks     *augTaskRegistry
 	resourceSubs *resourceSubscriptions
+	taskSubs     *taskSubscriptions
 	resultCache  *resultCacheConfig
 
 	// regErrs accumulates registration collisions. The fluent builder API
@@ -219,6 +220,7 @@ func New(info Info, opts ...Option) *Server {
 		resources:    make(map[string]*Resource),
 		prompts:      make(map[string]*Prompt),
 		resourceSubs: newResourceSubscriptions(),
+		taskSubs:     newTaskSubscriptions(),
 		augTasks:     newAugTaskRegistry(),
 	}
 
@@ -240,6 +242,7 @@ func (s *Server) ResourceSubscriptionsEnabled() bool {
 // Transports with server push (HTTP+SSE) call this during Serve.
 func (s *Server) SetResourceNotifier(n ResourceNotifier) {
 	s.resourceSubs.setNotifier(n)
+	s.taskSubs.setNotifier(n)
 }
 
 // SubscribeResource records that a client is interested in a resource URI.
@@ -256,6 +259,7 @@ func (s *Server) UnsubscribeResource(clientID, uri string) {
 // when the client's connection closes.
 func (s *Server) RemoveClientSubscriptions(clientID string) {
 	s.resourceSubs.removeClient(clientID)
+	s.taskSubs.removeClient(clientID)
 }
 
 // NotifyResourceUpdated pushes a notifications/resources/updated to every
@@ -263,6 +267,12 @@ func (s *Server) RemoveClientSubscriptions(clientID string) {
 // watcher). A no-op when no notifier is wired.
 func (s *Server) NotifyResourceUpdated(uri string) error {
 	return s.resourceSubs.notifyUpdated(uri)
+}
+
+// SubscribeTask records that a subscriptions/listen stream wants
+// notifications/tasks for taskID.
+func (s *Server) SubscribeTask(subscriptionID, taskID string) {
+	s.taskSubs.subscribe(subscriptionID, taskID)
 }
 
 // WithInstructions sets the server instructions that provide context to AI models
@@ -655,7 +665,9 @@ func WithResultCache(ttlMs int64, scope string) Option {
 	}
 }
 
-// ResultCache returns the configured cache hint, or ok=false when none is set.
+// ResultCache returns the configured cache hint. ok is true when
+// WithResultCache was set; otherwise applyCacheHint uses the immediately-stale
+// / private defaults required by CacheableResult.
 func (s *Server) ResultCache() (ttlMs int64, scope string, ok bool) {
 	if s.resultCache == nil {
 		return 0, "", false
@@ -697,10 +709,63 @@ func (s *Server) ResourceTemplates() []ResourceTemplateInfo {
 
 // isTemplate checks if a URI contains template parameters.
 func isTemplate(uri string) bool {
+	return IsURITemplate(uri)
+}
+
+// IsURITemplate reports whether uri contains `{param}` placeholders and
+// therefore belongs in resources/templates/list rather than resources/list.
+func IsURITemplate(uri string) bool {
 	for i := 0; i < len(uri); i++ {
 		if uri[i] == '{' {
 			return true
 		}
 	}
 	return false
+}
+
+const (
+	iconKeySrc = "src"
+	iconKeyURI = "uri"
+)
+
+// ForProtocol returns a wire-safe icon object for the given protocol
+// revision. 2026-07-28 uses src/sizes/theme; earlier revisions use
+// uri/mimeType/size. Fields are filled from Normalize so an icon authored
+// for one era still serializes for the other — but only that era's keys
+// appear on the wire, so strict additionalProperties:false schemas accept it.
+func (i Icon) ForProtocol(version string) any {
+	n := i.Normalize()
+	if protocol.IsModernVersion(version) {
+		out := map[string]any{iconKeySrc: n.Src}
+		if n.MimeType != "" {
+			out["mimeType"] = n.MimeType
+		}
+		if n.Sizes != "" {
+			out["sizes"] = n.Sizes
+		}
+		if n.Theme != "" {
+			out["theme"] = n.Theme
+		}
+		return out
+	}
+	out := map[string]any{iconKeyURI: n.URI}
+	if n.MimeType != "" {
+		out["mimeType"] = n.MimeType
+	}
+	if n.Size > 0 {
+		out["size"] = n.Size
+	}
+	return out
+}
+
+// IconsForProtocol maps a slice of icons onto the wire shape for version.
+func IconsForProtocol(icons []Icon, version string) []any {
+	if len(icons) == 0 {
+		return nil
+	}
+	out := make([]any, len(icons))
+	for i, icon := range icons {
+		out[i] = icon.ForProtocol(version)
+	}
+	return out
 }

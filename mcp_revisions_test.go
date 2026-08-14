@@ -54,6 +54,7 @@ func TestNegotiateVersion(t *testing.T) {
 		{"supported echoes back", "2024-11-05", "2024-11-05"},
 		{"empty falls back to default", "", protocol.MCPVersion},
 		{"unknown falls back to default", "2030-01-01", protocol.MCPVersion},
+		{"modern is not initialize-negotiated", protocol.ModernVersion, protocol.MCPVersion},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -279,7 +280,8 @@ func TestSession_SetClientCapabilitiesJSON(t *testing.T) {
 	sess.SetClientCapabilitiesJSON(json.RawMessage(`{
 		"sampling": {},
 		"elicitation": {},
-		"roots": {"listChanged": true}
+		"roots": {"listChanged": true},
+		"extensions": {"io.modelcontextprotocol/tasks": {}}
 	}`))
 	caps := sess.ClientCapabilities()
 	if !caps.Sampling {
@@ -290,5 +292,8 @@ func TestSession_SetClientCapabilitiesJSON(t *testing.T) {
 	}
 	if caps.Roots == nil || !caps.Roots.ListChanged {
 		t.Errorf("expected Roots.ListChanged=true, got %+v", caps.Roots)
+	}
+	if !sess.HasExtension(protocol.ExtensionTasks) {
+		t.Error("expected tasks extension")
 	}
 }
