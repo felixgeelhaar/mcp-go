@@ -21,15 +21,16 @@ Phases 0–4 of this document shipped across v1.22–v1.25 plus the spec-alignme
 work. Checkboxes below are historical planning notes; treat the status table
 as authoritative.
 
-### Remaining (intentionally deferred or out of scope)
+### Remaining (evaluated)
 
-| Item | Why it stays out |
+There is **no `/v2` Go module path**. Phase 4 shipped on v1 (stateless default in v1.24.0; spec-alignment on this branch). A major-version import rewrite is not a planned release.
+
+| Item | Verdict |
 |---|---|
-| OAuth token enforcement, `iss` validation, DCR, CIMD | Auth stays advertise-only; gateway-terminated by design. RFC 9728 metadata is now *served* at `/.well-known/oauth-protected-resource` when configured. |
-| Unsolicited task handles (no per-request opt-in) | Tasks extension still requires tool-level `TaskSupport`. |
-| `x-mcp-header` parameter→HTTP header mapping (SEP-2243) | Custom header projection is a gateway concern; routing headers `Mcp-Method` / `Mcp-Name` are enforced. |
-| JSON-RPC batching | Optional in 2025-03-26, removed in 2025-06-18; never implemented (conformant). |
-| `/v2` module path | Stateless default shipped as v1.24.0; no external consumers to migrate. |
+| OAuth token enforcement, `iss` validation, DCR, CIMD | **Out of library.** Auth stays advertise-only; enforcement belongs at the gateway. RFC 9728 `/.well-known/oauth-protected-resource` is served when discovery OAuth metadata is configured. |
+| JSON-RPC batching | **Closed — will not implement.** Optional in 2025-03-26, removed in 2025-06-18. Never batching is conformant. |
+| `x-mcp-header` → `Mcp-Param-*` (SEP-2243) | **Optional for servers (MAY).** mcp-go does not emit the annotation, so the HTTP client is not required to mirror headers until a listed tool carries it. Follow-up only if we annotate schemas or consume third-party servers that do. `Mcp-Method` / `Mcp-Name` are already enforced. |
+| Unsolicited task handles (SEP-2663) | **In library, modern path.** A `TaskSupportRequired` tool returns a task handle on a plain `tools/call` (no per-request `task` field). Optional tools still need the client to opt in. Legacy initialize-era callers keep the 2025-11-25 rejection. |
 
 ---
 
@@ -43,8 +44,8 @@ as authoritative.
    Spec-alignment work after that is wire-format and default-behavior correctness.
 3. **Certify one revision per release.** Each phase ends with a conformance test
    suite proving the negotiated revision is fully honored, then bumps the default.
-4. **The stateless `2026-07-28` rewrite is a major version (v2).** Everything
-   before it is additive/back-compatible (v1.x).
+4. **The stateless `2026-07-28` rewrite stays on v1.** Dual-era (initialize through
+   `2025-11-25`, modern via `server/discover` + `_meta`). No `/v2` module path.
 
 **Release mapping (proposed):**
 
@@ -54,7 +55,7 @@ as authoritative.
 | 1 | 2025-03-26 | v1.23.0 | no (additive) |
 | 2 | 2025-06-18 | v1.24.0 | batching reversal (guarded) |
 | 3 | 2025-11-25 | v1.25.0 | validation-error channel |
-| 4 | 2026-07-28 RC | **v2.0.0** | yes — stateless rewrite |
+| 4 | 2026-07-28 | **v1.24.0+** | ServeHTTP defaults to stateless Streamable HTTP; no module-path break |
 
 ---
 
@@ -92,8 +93,8 @@ Adds the modern transport and the annotation/content surface. Additive.
   exists (`transport/store.go`).
 - [ ] **Audio content** (`type:"audio"`, base64 `data` + `mimeType`) via the new
   `ContentBlock` union.
-- [ ] **JSON-RPC batching** — accept request arrays (added this revision;
-  **removed again in 2025-06-18**, so guard it on negotiated version).
+- [ ] **JSON-RPC batching** — **will not implement.** Optional in this revision
+  and removed in 2025-06-18; never batching is conformant.
 - [ ] **Tool annotations** — already implemented (`server/annotations.go`); add
   conformance coverage.
 - [ ] **`ProgressNotification.message`** field.
@@ -111,8 +112,7 @@ Adds the modern transport and the annotation/content surface. Additive.
 The last published stable before `2025-11-25`. Mostly already built — this phase
 is about wiring, headers, and the batching reversal.
 
-- [ ] **Reject batching** when the negotiated version is `2025-06-18` (reversal of
-  Phase 1). Version-gated in the wire decoder.
+- [ ] **Reject batching** — N/A: this library never accepted request arrays.
 - [x] **Enforce `MCP-Protocol-Version` header** on all post-initialize HTTP
   requests; reject/deprecate missing header per spec.
 - [x] **Resource links** — `ResourceLink` content block (`type:"resource_link"`)
@@ -155,11 +155,11 @@ is about wiring, headers, and the batching reversal.
 
 ---
 
-## Phase 4 — 2026-07-28 Release Candidate (v2.0.0) — stateless rewrite
+## Phase 4 — 2026-07-28 (v1) — stateless rewrite
 
-The largest transition since launch: a ground-up stateless redesign. Ship behind
-an explicit opt-in (`StreamableHTTPOptions.Stateless`, mirroring go-sdk) so v1
-clients keep working, then make it the default in v2.
+The largest transition since launch: a ground-up stateless redesign. Shipped on
+**v1** behind Streamable HTTP (`WithStreamable()` / ServeHTTP default). There is
+no `/v2` module path.
 
 **Lifecycle / methods**
 - [x] Implement **`server/discover`** (advertise supported versions, capabilities,
@@ -221,10 +221,11 @@ clients keep working, then make it the default in v2.
   (`ExtensionUI`) and associates tools via `_meta.ui.resourceUri` (+ the flat
   `_meta["ui/resourceUri"]`, which the spec deprecates for removal before GA — we
   keep emitting it for host compat). Already conformant.
-- [~] Move **Tasks** to the `io.modelcontextprotocol/tasks` extension: polling
+- [x] Move **Tasks** to the `io.modelcontextprotocol/tasks` extension: polling
   `tasks/get`, new `tasks/update`, **remove `tasks/list`**, allow unsolicited task
   handles. (tasks/update added; tasks/list gated off for modern; extension
-  already advertised. Unsolicited task handles remain.)
+  advertised. On the modern path a `TaskSupportRequired` tool returns a task
+  handle without a per-request `task` field.)
 
 **Auth / errors / deprecations**
 - [~] `iss` validation (RFC 9207); `application_type` in DCR; Client ID Metadata
@@ -249,14 +250,12 @@ clients keep working, then make it the default in v2.
   — the modern log level travels in `_meta`.)
 - [x] Loosen `inputSchema`/`outputSchema` to full JSON Schema 2020-12 (`$ref`,
   `oneOf`/`anyOf`, conditionals).
-- [x] Make `Stateless` the default — shipped in **v1.24.0** (NOT v2.0.0, by
-  decision). `WithStreamable()` now defaults to the stateless (2026-07-28) model
-  (drops `Mcp-Session-Id`, hard-requires `Mcp-Method`); `WithStreamableStateful()`
-  is the opt-out into the legacy session-negotiated (2025-03-26) path. This is a
-  behavior change to the streamable HTTP default, released as a minor because the
-  only consumers are the maintainer's own fleet (all stdio — unaffected) and they
-  upgrade in lockstep; there are no external consumers. The `/v2` module-path tax
-  is intentionally avoided. See CHANGELOG [1.24.0].
+- [x] Make `Stateless` the default — shipped in **v1.24.0**. `WithStreamable()`
+  uses the 2026-07-28 model (drops `Mcp-Session-Id`, hard-requires `Mcp-Method`);
+  `WithStreamableStateful()` is the opt-out into the legacy session-negotiated
+  (2025-03-26) path. Behavior change to the Streamable HTTP default, released as
+  a minor because the only consumers are the maintainer's own fleet (all stdio —
+  unaffected) and they upgrade in lockstep. See CHANGELOG [1.24.0].
 
 ---
 
@@ -280,11 +279,11 @@ clients keep working, then make it the default in v2.
 
 ```
 Phase 0  Foundation ........ wire dead methods, sessions, negotiation   v1.22.0
-Phase 1  2025-03-26 ........ Streamable HTTP, audio, batching, OAuth doc  v1.23.0
-Phase 2  2025-06-18 ........ resource links, headers, batching-off        v1.24.0
-Phase 3  2025-11-25 ........ tasks-wired, icons, sampling-tools  [CURRENT] v1.25.0
-Phase 4  2026-07-28 ........ stateless rewrite, MRTR, extensions          v2.0.0
+Phase 1  2025-03-26 ........ Streamable HTTP, audio, OAuth doc            v1.23.0
+Phase 2  2025-06-18 ........ resource links, headers                      v1.24.0
+Phase 3  2025-11-25 ........ tasks-wired, icons, sampling-tools           v1.25.0
+Phase 4  2026-07-28 ........ stateless rewrite, MRTR, extensions          v1.24.0+
 ```
 
-Phases 0–3 are additive and safe to ship incrementally. Phase 4 is the v2 break;
-gate it behind `Stateless` opt-in until the spec is final (July 28, 2026).
+Phases 0–4 shipped on v1. Dual-era: initialize through `2025-11-25`; modern via
+`server/discover` + per-request `_meta`.

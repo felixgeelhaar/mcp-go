@@ -172,6 +172,33 @@ func TestTaskCapability_And_ExecutionTaskSupport(t *testing.T) {
 	}
 }
 
+func TestTaskAugmentation_UnsolicitedRequiredModern(t *testing.T) {
+	srv := NewServer(ServerInfo{Name: "s", Version: "1"})
+	type in struct {
+		X string `json:"x"`
+	}
+	srv.Tool("must").Description("task required").TaskSupport(TaskSupportRequired).
+		Handler(func(_ in) (string, error) { return "ok", nil })
+	handler := newRequestHandler(srv)
+
+	resp, err := handler.HandleRequest(context.Background(), &protocol.Request{
+		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsCall,
+		Params: modernParams(t, protocol.ModernVersion, map[string]any{
+			"name": "must", "arguments": map[string]any{"x": "y"},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("modern required-task plain call: %v", err)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type %T", resp.Result)
+	}
+	if result[fieldTask] == nil {
+		t.Fatalf("expected unsolicited task handle, got %#v", result)
+	}
+}
+
 func assertCode(t *testing.T, err error, code int, ctx string) {
 	t.Helper()
 	var mcpErr *protocol.Error

@@ -256,9 +256,10 @@ var (
 // Resource template types
 type ResourceTemplateInfo = server.ResourceTemplateInfo
 
-// Task-augmented request types (MCP 2025-11-25). Declare a tool's task support
-// with .TaskSupport(mcp.TaskSupportOptional); clients augment tools/call with a
-// task and poll tasks/get / tasks/result.
+// Task-augmented request types (MCP 2025-11-25 / tasks extension). Declare a
+// tool's task support with .TaskSupport(mcp.TaskSupportOptional|Required).
+// Clients may send `task` on tools/call and poll tasks/get. On the modern
+// path a Required tool returns a task handle without that per-request field.
 type AugTask = server.AugTask
 type TaskSupport = server.TaskSupport
 
@@ -1213,6 +1214,18 @@ func reconcileTaskSupport(mode server.TaskSupport, augmented bool, name string) 
 	return nil
 }
 
+// resolveTaskAugmentation reports whether this tools/call should run as a task.
+// On the modern path a TaskSupportRequired tool is always a task, even without
+// a per-request `task` field (SEP-2663 unsolicited handles).
+func resolveTaskAugmentation(ctx context.Context, mode server.TaskSupport, name string, hasTaskField bool) (bool, error) {
+	augmented := hasTaskField
+	if !augmented && protocol.IsModernVersion(protocolVersionFrom(ctx)) &&
+		mode == server.TaskSupportRequired {
+		augmented = true
+	}
+	return augmented, reconcileTaskSupport(mode, augmented, name)
+}
+
 // startAugmentedToolCall runs a tools/call as a background task and returns the
 // CreateTaskResult immediately. The closure runs the tool and builds its normal
 // response so tasks/result returns exactly what a plain call would have.
@@ -1268,10 +1281,8 @@ func (h *requestHandler) handleToolsCall(ctx context.Context, req *protocol.Requ
 		return nil, protocol.NewInvalidParams("tool not found: " + params.Name)
 	}
 
-	// Task augmentation (MCP 2025-11-25): reconcile the request against the
-	// tool's execution.taskSupport before executing.
-	augmented := params.Task != nil
-	if err := reconcileTaskSupport(tool.TaskSupport(), augmented, params.Name); err != nil {
+	augmented, err := resolveTaskAugmentation(ctx, tool.TaskSupport(), params.Name, params.Task != nil)
+	if err != nil {
 		return nil, err
 	}
 
