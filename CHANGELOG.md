@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.26.0](https://github.com/klarlabs-studio/mcp-go/compare/v1.25.0...v1.26.0) - 2026-08-14
+
 ### Changed — MCP spec alignment
 
 - **`ServeHTTP` defaults to Streamable HTTP** (stateless 2026-07-28 model).
@@ -68,6 +70,14 @@ All notable changes to this project will be documented in this file.
   `notifications.taskIds` (tasks extension required). Status changes are
   pushed to those streams with the same DetailedTask as `tasks/get`.
 - **No `/v2` module path.** Phase 4 stays on v1.
+
+### Fixed
+
+- **Background task elicitation no longer races `tools/call`.** A
+  `TaskSupportRequired` tool that elicited immediately could rewrite the
+  CreateTaskResult into an `input_required` response (and trip the race
+  detector). The task now runs with a forked session/broker; `tools/call`
+  keeps the task handle.
 
 ## [1.25.0](https://github.com/klarlabs-studio/mcp-go/compare/v1.24.1...v1.25.0) - 2026-08-14
 
