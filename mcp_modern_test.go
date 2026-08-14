@@ -210,6 +210,53 @@ func TestModern_CacheHintStamped(t *testing.T) {
 	}
 }
 
+// TestModern_DefaultCacheHint verifies CacheableResult fields are always
+// present on modern list results, using the immediately-stale / private
+// defaults when WithResultCache is unset.
+func TestModern_DefaultCacheHint(t *testing.T) {
+	srv := NewServer(ServerInfo{Name: "s", Version: "1"})
+	srv.Tool("t").Handler(func(_ struct{}) (string, error) { return "ok", nil })
+	handler := newRequestHandler(srv)
+
+	req := &protocol.Request{
+		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList,
+		Params: modernParams(t, protocol.DraftVersion, nil),
+	}
+	resp, err := handler.HandleRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	res := resp.Result.(map[string]any)
+	if res["ttlMs"] != defaultCacheTTLMs {
+		t.Errorf("ttlMs = %v, want %d", res["ttlMs"], defaultCacheTTLMs)
+	}
+	if res["cacheScope"] != defaultCacheScope {
+		t.Errorf("cacheScope = %v, want %s", res["cacheScope"], defaultCacheScope)
+	}
+}
+
+// TestModern_ServerInfoMeta verifies modern results identify the server in
+// _meta[io.modelcontextprotocol/serverInfo].
+func TestModern_ServerInfoMeta(t *testing.T) {
+	srv := NewServer(ServerInfo{Name: "ident", Version: "9"})
+	srv.Tool("t").Handler(func(_ struct{}) (string, error) { return "ok", nil })
+	handler := newRequestHandler(srv)
+
+	req := &protocol.Request{
+		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList,
+		Params: modernParams(t, protocol.DraftVersion, nil),
+	}
+	resp, err := handler.HandleRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	meta, _ := resp.Result.(map[string]any)["_meta"].(map[string]any)
+	si, _ := meta[protocol.MetaKeyServerInfo].(map[string]any)
+	if si[fieldName] != "ident" || si[fieldVersion] != "9" {
+		t.Errorf("serverInfo _meta = %#v", si)
+	}
+}
+
 // TestModern_ResourceNotFoundRenumbered verifies a resource-not-found error is
 // -32602 on the modern path (vs -32001 on legacy).
 func TestModern_ResourceNotFoundRenumbered(t *testing.T) {

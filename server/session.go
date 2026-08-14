@@ -15,14 +15,15 @@ import (
 // It allows the server to send requests to the client (for sampling, roots)
 // and receive notifications.
 type Session struct {
-	id          string
-	mu          sync.RWMutex
-	sender      RequestSender
-	notifier    NotificationSender
-	requestID   atomic.Int64
-	logLevel    LogLevel
-	roots       []Root
-	rootsChange func([]Root)
+	id             string
+	mu             sync.RWMutex
+	sender         RequestSender
+	notifier       NotificationSender
+	requestID      atomic.Int64
+	logLevel       LogLevel
+	loggingEnabled bool // false: MUST NOT emit notifications/message (modern, no logLevel)
+	roots          []Root
+	rootsChange    func([]Root)
 
 	// Cancellation tracking
 	cancellation *CancellationManager
@@ -101,6 +102,7 @@ func NewSession(id string, sender RequestSender, notifier NotificationSender, op
 		sender:              sender,
 		notifier:            notifier,
 		logLevel:            LogLevelInfo,
+		loggingEnabled:      true, // initialize-era default; modern path opts in via _meta logLevel
 		cancellation:        NewCancellationManager(),
 		subscriptions:       NewSubscriptionManager(),
 		elicitationComplete: make(map[string]chan struct{}),
@@ -442,10 +444,11 @@ func (s *Session) HandleRootsChanged(roots []Root) {
 // the deprecation (SA1019).
 func (s *Session) emitLog(level LogLevel, logger string, data any) {
 	s.mu.RLock()
+	enabled := s.loggingEnabled
 	minLevel := s.logLevel
 	s.mu.RUnlock()
 
-	if !ShouldLog(level, minLevel) {
+	if !enabled || !ShouldLog(level, minLevel) {
 		return
 	}
 
@@ -524,11 +527,24 @@ func (s *Session) Emergency(logger string, data any) {
 	s.emitLog(LogLevelEmergency, logger, data)
 }
 
-// SetLogLevel sets the minimum log level.
+// SetLogLevel sets the minimum log level and opts this session into emitting
+// notifications/message. Calling it is the initialize-era equivalent of
+// logging/setLevel; on the modern path applyModern calls it only when the
+// request carried io.modelcontextprotocol/logLevel.
 func (s *Session) SetLogLevel(level LogLevel) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.logLevel = level
+	s.loggingEnabled = true
+}
+
+// SetLoggingEnabled controls whether notifications/message may be sent.
+// MCP 2026-07-28: servers MUST NOT emit log notifications for a request that
+// omitted io.modelcontextprotocol/logLevel.
+func (s *Session) SetLoggingEnabled(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loggingEnabled = enabled
 }
 
 // LogLevel returns the current minimum log level.

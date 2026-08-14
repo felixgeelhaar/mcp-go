@@ -849,6 +849,7 @@ func (h *requestHandler) handle(ctx context.Context, req *protocol.Request) (*pr
 	if modern {
 		withResultType(resp)
 		h.applyCacheHint(req.Method, resp)
+		h.withServerInfoMeta(ctx, resp)
 	}
 	return resp, nil
 }
@@ -1041,6 +1042,17 @@ func (h *requestHandler) handleServerDiscover(ctx context.Context, req *protocol
 	}
 	if instructions := h.srv.Instructions(); instructions != "" {
 		result["instructions"] = instructions
+	}
+	ttlMs, scope, ok := h.srv.ResultCache()
+	if !ok {
+		ttlMs, scope = defaultCacheTTLMs, defaultCacheScope
+	}
+	result["ttlMs"] = ttlMs
+	if scope != "" {
+		result["cacheScope"] = scope
+	}
+	result["_meta"] = map[string]any{
+		protocol.MetaKeyServerInfo: serverInfoMap(manifest, protocolVersionFrom(ctx)),
 	}
 	return protocol.NewResponse(req.ID, result), nil
 }

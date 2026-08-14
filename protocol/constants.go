@@ -142,6 +142,7 @@ const (
 	MetaKeyProtocolVersion    = "io.modelcontextprotocol/protocolVersion"
 	MetaKeyClientInfo         = "io.modelcontextprotocol/clientInfo"
 	MetaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
+	MetaKeyServerInfo         = "io.modelcontextprotocol/serverInfo" // result _meta; servers SHOULD set
 	MetaKeyLogLevel           = "io.modelcontextprotocol/logLevel"
 	MetaKeySubscriptionID     = "io.modelcontextprotocol/subscriptionId"
 	MetaKeyRelatedTask        = "io.modelcontextprotocol/related-task"

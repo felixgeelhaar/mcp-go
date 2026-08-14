@@ -356,4 +356,54 @@ func TestHTTP_Discovery(t *testing.T) {
 			t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
 		}
 	})
+
+	t.Run("serves RFC 9728 protected resource metadata when OAuth is advertised", func(t *testing.T) {
+		manifest := &server.Manifest{
+			Name:            "test-server",
+			Version:         "1.0.0",
+			ProtocolVersion: "2025-11-25",
+		}
+		discovery := NewServerDiscovery(manifest, WithDiscoveryOAuthMetadata(OAuthMetadata{
+			AuthorizationServers: []string{"https://auth.example.com"},
+			ResourceIndicator:    "https://mcp.example.com/mcp",
+			ScopesSupported:      []string{"mcp:read"},
+		}))
+		transport := NewHTTP(":0", WithDiscovery(discovery))
+		httpHandler := transport.createHandler(HandlerFunc(func(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+			return nil, nil
+		}))
+
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+		rec := httptest.NewRecorder()
+		httpHandler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body %s", rec.Code, rec.Body.String())
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if doc["resource"] != "https://mcp.example.com/mcp" {
+			t.Errorf("resource = %v", doc["resource"])
+		}
+		servers, _ := doc["authorization_servers"].([]any)
+		if len(servers) != 1 || servers[0] != "https://auth.example.com" {
+			t.Errorf("authorization_servers = %v", doc["authorization_servers"])
+		}
+	})
+
+	t.Run("does not serve RFC 9728 path without OAuth metadata", func(t *testing.T) {
+		discovery := NewServerDiscovery(&server.Manifest{Name: "s", ProtocolVersion: "2025-11-25"})
+		transport := NewHTTP(":0", WithDiscovery(discovery))
+		httpHandler := transport.createHandler(HandlerFunc(func(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+			return nil, nil
+		}))
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+		rec := httptest.NewRecorder()
+		httpHandler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", rec.Code)
+		}
+	})
 }

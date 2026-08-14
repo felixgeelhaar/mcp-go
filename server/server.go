@@ -655,7 +655,9 @@ func WithResultCache(ttlMs int64, scope string) Option {
 	}
 }
 
-// ResultCache returns the configured cache hint, or ok=false when none is set.
+// ResultCache returns the configured cache hint. ok is true when
+// WithResultCache was set; otherwise applyCacheHint uses the immediately-stale
+// / private defaults required by CacheableResult.
 func (s *Server) ResultCache() (ttlMs int64, scope string, ok bool) {
 	if s.resultCache == nil {
 		return 0, "", false

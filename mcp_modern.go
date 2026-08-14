@@ -102,8 +102,12 @@ func (h *requestHandler) applyModern(ctx context.Context, method string, m *mode
 	sess := server.NewSession("modern", nil, transport.NotificationSenderFromContext(ctx))
 	sess.SetClientCapabilitiesJSON(m.clientCaps)
 	sess.SetProtocolVersion(m.protocolVersion)
+	// Log notifications are opt-in per request (SEP-2575): absent logLevel
+	// means the server MUST NOT emit notifications/message for this call.
 	if m.logLevel != "" {
 		sess.SetLogLevel(server.LogLevel(m.logLevel))
+	} else {
+		sess.SetLoggingEnabled(false)
 	}
 	// Attach an MRTR broker so server→client requests (sampling, elicitation,
 	// roots) resolve statelessly: fulfilled from inputResponses on a retry, or
@@ -213,18 +217,29 @@ var cacheableMethods = map[string]bool{
 	protocol.MethodResourcesList:          true,
 	protocol.MethodResourcesRead:          true,
 	protocol.MethodResourcesTemplatesList: true,
+	protocol.MethodServerDiscover:         true,
 }
 
-// applyCacheHint stamps ttlMs/cacheScope onto a cacheable modern result when the
-// server has a cache hint configured (WithResultCache). server/discover sets its
-// own hint. A no-op otherwise.
+// defaultCacheTTLMs / defaultCacheScope are the CacheableResult values used
+// when the server has not configured WithResultCache. ttlMs 0 means
+// immediately stale (clients MAY re-fetch every time); cacheScope "private"
+// is the conservative default (do not share across authorization contexts).
+const (
+	defaultCacheTTLMs int64 = 0
+	defaultCacheScope       = "private"
+)
+
+// applyCacheHint stamps ttlMs/cacheScope onto a cacheable modern result.
+// CacheableResult makes both fields required; when WithResultCache is unset
+// the defaults above are used. Existing values on the result are left alone
+// (server/discover stamps its own).
 func (h *requestHandler) applyCacheHint(method string, resp *protocol.Response) {
 	if resp == nil || !cacheableMethods[method] {
 		return
 	}
 	ttlMs, scope, ok := h.srv.ResultCache()
 	if !ok {
-		return
+		ttlMs, scope = defaultCacheTTLMs, defaultCacheScope
 	}
 	if m, mok := resp.Result.(map[string]any); mok {
 		if _, present := m["ttlMs"]; !present {
@@ -236,6 +251,28 @@ func (h *requestHandler) applyCacheHint(method string, resp *protocol.Response) 
 			}
 		}
 	}
+}
+
+// withServerInfoMeta stamps io.modelcontextprotocol/serverInfo onto a modern
+// result's _meta (MCP 2026-07-28: servers SHOULD identify themselves on every
+// response). Existing _meta keys, including a caller-supplied serverInfo, are
+// preserved.
+func (h *requestHandler) withServerInfoMeta(ctx context.Context, resp *protocol.Response) {
+	if resp == nil {
+		return
+	}
+	m, ok := resp.Result.(map[string]any)
+	if !ok {
+		return
+	}
+	meta, _ := m["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	if _, present := meta[protocol.MetaKeyServerInfo]; !present {
+		meta[protocol.MetaKeyServerInfo] = serverInfoMap(h.srv.Manifest(), protocolVersionFrom(ctx))
+	}
+	m["_meta"] = meta
 }
 
 // modernizeError adapts a legacy protocol error to the modern code scheme: the

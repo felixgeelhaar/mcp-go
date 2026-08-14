@@ -29,7 +29,16 @@ All notable changes to this project will be documented in this file.
   handshake. `DraftVersion` remains as a deprecated alias.
 - **Client default protocol version is `2025-11-25`.** HTTP requests send
   `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name`. `Client.Discover`
-  speaks `server/discover`. Icon parsing accepts modern `src`/`sizes`/`theme`.
+  speaks `server/discover`. After Discover, subsequent calls attach modern
+  `_meta` (protocolVersion, clientInfo, clientCapabilities). Icon parsing
+  accepts modern `src`/`sizes`/`theme`.
+- **Modern list/read/discover results always carry `ttlMs` and `cacheScope`**
+  (CacheableResult). Defaults are `ttlMs: 0` (immediately stale) and
+  `cacheScope: "private"`; `WithResultCache` overrides them.
+- **Modern results identify the server** in
+  `_meta[io.modelcontextprotocol/serverInfo]`.
+- **Modern requests omit `notifications/message` unless `_meta` includes
+  `io.modelcontextprotocol/logLevel`** (SEP-2575 MUST).
 
 ### Added
 
@@ -43,6 +52,8 @@ All notable changes to this project will be documented in this file.
   MCP 2025-06-18) is parsed and attached via `CompletionContextFromContext`.
 - **`notifications/elicitation/complete`** unblocks
   `Session.WaitElicitationComplete` for URL-mode elicitation.
+- **RFC 9728 `/.well-known/oauth-protected-resource`** is served (advertise
+  only, no token validation) when discovery OAuth metadata is configured.
 
 ## [1.25.0](https://github.com/klarlabs-studio/mcp-go/compare/v1.24.1...v1.25.0) - 2026-08-14
 

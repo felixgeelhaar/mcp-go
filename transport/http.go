@@ -390,6 +390,9 @@ func (h *HTTP) createHandler(handler Handler) http.Handler {
 
 	if h.discovery != nil {
 		mux.Handle("/.well-known/mcp", h.discovery)
+		if h.discovery.HasProtectedResourceMetadata() {
+			mux.HandleFunc("/.well-known/oauth-protected-resource", h.discovery.ServeProtectedResourceMetadata)
+		}
 	}
 
 	mux.HandleFunc("/mcp/sse", func(w http.ResponseWriter, r *http.Request) {

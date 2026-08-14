@@ -66,7 +66,8 @@ slog.InfoContext(ctx, "starting", "tool", "scan")
 
 `Session.SetLogLevel` / `Session.LogLevel` are **not** deprecated — in the modern
 stateless model the client's desired log level travels in each request's `_meta`
-(`io.modelcontextprotocol/logLevel`) and is applied per request.
+(`io.modelcontextprotocol/logLevel`) and is applied per request. A modern
+request that omits that field does not receive `notifications/message`.
 
 ## Timeline
 

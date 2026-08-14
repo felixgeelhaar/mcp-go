@@ -63,7 +63,9 @@ type ServerAuth struct {
 	// ProtectedResourceMetadata is the URL of this server's
 	// /.well-known/oauth-protected-resource document (RFC 9728). Clients
 	// fetch it to discover authorization servers and supported scopes.
-	// Advertisement only; this library does not serve or validate it.
+	// Advertisement only; this library does not validate tokens. When OAuth
+	// metadata is configured, transport.HTTP also serves the document at
+	// that well-known path.
 	ProtectedResourceMetadata string `json:"protectedResourceMetadata,omitempty"`
 
 	// ResourceIndicator is the canonical resource identifier for this MCP
@@ -168,4 +170,51 @@ func (d *ServerDiscovery) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(d)
+}
+
+// HasProtectedResourceMetadata reports whether this discovery document has
+// enough OAuth advertisement to serve RFC 9728 Protected Resource Metadata.
+func (d *ServerDiscovery) HasProtectedResourceMetadata() bool {
+	if d == nil || d.Authentication == nil {
+		return false
+	}
+	a := d.Authentication
+	return len(a.AuthorizationServers) > 0 || a.ResourceIndicator != "" || a.ProtectedResourceMetadata != ""
+}
+
+// ServeProtectedResourceMetadata writes the RFC 9728 OAuth 2.0 Protected
+// Resource Metadata document. This is advertisement only: no tokens are
+// issued or validated. The `resource` identifier is ResourceIndicator when
+// set, otherwise the request's host plus /mcp.
+func (d *ServerDiscovery) ServeProtectedResourceMetadata(w http.ResponseWriter, r *http.Request) {
+	if !d.HasProtectedResourceMetadata() {
+		http.NotFound(w, r)
+		return
+	}
+	auth := d.Authentication
+	resource := auth.ResourceIndicator
+	if resource == "" {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+			scheme = proto
+		}
+		resource = scheme + "://" + r.Host + "/mcp"
+	}
+	doc := map[string]any{
+		"resource":                 resource,
+		"bearer_methods_supported": []string{"header"},
+	}
+	if len(auth.AuthorizationServers) > 0 {
+		doc["authorization_servers"] = auth.AuthorizationServers
+	}
+	if len(auth.ScopesSupported) > 0 {
+		doc["scopes_supported"] = auth.ScopesSupported
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(doc)
 }
