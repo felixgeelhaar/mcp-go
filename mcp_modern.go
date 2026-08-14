@@ -158,6 +158,17 @@ func newSubscriptionID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// isCreateTaskResult reports a modern tools/call that already returned a
+// CreateTaskResult (resultType "task"). That call is complete; task-level MRTR
+// pauses belong on tasks/get, not on rewriting this response.
+func isCreateTaskResult(resp *protocol.Response) bool {
+	if resp == nil {
+		return false
+	}
+	m, ok := resp.Result.(map[string]any)
+	return ok && m[fieldResultType] == protocol.ResultTypeTask
+}
+
 // inputRequiredResponse converts a paused stateless handler into an MRTR
 // input_required result (MCP 2026-07-28). It returns (response, true) when the
 // request's broker recorded unfulfilled input requests — the handler called

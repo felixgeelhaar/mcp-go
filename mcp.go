@@ -851,8 +851,9 @@ func (h *requestHandler) handle(ctx context.Context, req *protocol.Request) (*pr
 	// MRTR (MCP 2026-07-28): a stateless handler that called sampling/elicitation/
 	// roots without a supplied response is paused, not failed — surface the
 	// recorded inputRequests as an input_required result for the client to
-	// fulfill and retry.
-	if modern {
+	// fulfill and retry. A CreateTaskResult already completed the call; the
+	// background task has its own broker and pauses via tasks/get.
+	if modern && !isCreateTaskResult(resp) {
 		if r, ok := inputRequiredResponse(ctx, req); ok {
 			return r, nil
 		}

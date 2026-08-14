@@ -308,7 +308,14 @@ func (s *Server) runAugmented(id string) {
 	}
 
 	if sess := SessionFromContext(runCtx); sess != nil {
-		sess.SetInputBroker(NewInputBroker(responses, nil))
+		forked := sess.ForkWithBroker(NewInputBroker(responses, nil))
+		runCtx = ContextWithSession(runCtx, forked)
+		if forked.SupportsFeature("elicitation") {
+			runCtx = ContextWithElicitor(runCtx, NewElicitor(forked))
+		}
+		if forked.SupportsFeature("channels") {
+			runCtx = ContextWithChannel(runCtx, NewChannelSender(forked))
+		}
 	}
 
 	result, isError, execErr := exec(runCtx)

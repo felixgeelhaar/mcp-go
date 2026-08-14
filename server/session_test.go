@@ -446,3 +446,24 @@ func TestSessionAllLogLevels(t *testing.T) {
 		t.Errorf("expected 8 notifications, got %d", len(notifier.notifications))
 	}
 }
+
+func TestSession_ForkWithBrokerIsolatesBroker(t *testing.T) {
+	orig := NewInputBroker(nil, nil)
+	s := NewSession("s", nil, nil)
+	s.SetProtocolVersion("2026-07-28")
+	s.SetInputBroker(orig)
+
+	forked := s.ForkWithBroker(NewInputBroker(nil, nil))
+	if forked.ID() != "s" {
+		t.Errorf("id = %q, want s", forked.ID())
+	}
+	if forked.ProtocolVersion() != "2026-07-28" {
+		t.Errorf("protocol = %q", forked.ProtocolVersion())
+	}
+	if forked.InputBroker() == orig {
+		t.Fatal("forked session still shares the original broker")
+	}
+	if s.InputBroker() != orig {
+		t.Fatal("ForkWithBroker mutated the original session broker")
+	}
+}

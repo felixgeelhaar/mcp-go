@@ -54,7 +54,11 @@ func TestModern_TaskElicitationRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tools/call: %v", err)
 	}
-	id, _ := resp.Result.(map[string]any)[fieldTaskID].(string)
+	result, _ := resp.Result.(map[string]any)
+	if result[fieldResultType] != protocol.ResultTypeTask {
+		t.Fatalf("tools/call resultType = %v, want %q (must not rewrite to input_required)", result[fieldResultType], protocol.ResultTypeTask)
+	}
+	id, _ := result[fieldTaskID].(string)
 	if id == "" {
 		t.Fatalf("missing taskId: %#v", resp.Result)
 	}
@@ -86,6 +90,34 @@ func TestModern_TaskElicitationRoundTrip(t *testing.T) {
 	raw, _ := json.Marshal(done[fieldResult])
 	if !strings.Contains(string(raw), "Luca") {
 		t.Errorf("expected inlined result Luca, got %s", raw)
+	}
+}
+
+func TestModern_RequiredTaskCallKeepsHandleWhenHandlerElicits(t *testing.T) {
+	// tools/call must return a CreateTaskResult even when the background handler
+	// elicits immediately — it must not be rewritten to input_required.
+	for i := 0; i < 30; i++ {
+		srv := NewServer(ServerInfo{Name: "s", Version: "1"})
+		srv.Tool("ask").Description("elicit").TaskSupport(TaskSupportRequired).
+			Handler(func(ctx context.Context, _ struct{}) (string, error) {
+				_, err := server.ElicitFromContext(ctx).Elicit(ctx, &server.ElicitRequest{
+					Message:         "?",
+					RequestedSchema: map[string]any{"type": "object"},
+				})
+				return "", err
+			})
+		handler := newRequestHandler(srv)
+		resp, err := handler.HandleRequest(context.Background(), &protocol.Request{
+			JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsCall,
+			Params: modernTaskParams(t, map[string]any{"name": "ask", "arguments": map[string]any{}}),
+		})
+		if err != nil {
+			t.Fatalf("iter %d: %v", i, err)
+		}
+		result, _ := resp.Result.(map[string]any)
+		if result[fieldResultType] != protocol.ResultTypeTask || result[fieldTaskID] == nil {
+			t.Fatalf("iter %d: got %#v, want CreateTaskResult", i, resp.Result)
+		}
 	}
 }
 

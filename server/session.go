@@ -262,6 +262,27 @@ func (s *Session) SetInputBroker(b *InputBroker) {
 	s.broker = b
 }
 
+// ForkWithBroker returns a session that shares identity, capabilities, and
+// notifiers with s but uses an independent InputBroker. Background task
+// execution uses this so it cannot race the originating request's MRTR path.
+func (s *Session) ForkWithBroker(b *InputBroker) *Session {
+	if s == nil {
+		out := NewSession("", nil, nil)
+		out.broker = b
+		return out
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c := NewSession(s.id, s.sender, s.notifier)
+	c.clientCaps = s.clientCaps
+	c.protocolVersion = s.protocolVersion
+	c.logLevel = s.logLevel
+	c.loggingEnabled = s.loggingEnabled
+	c.extensions = s.extensions
+	c.broker = b
+	return c
+}
+
 // InputBroker returns the session's MRTR input broker, or nil under legacy
 // (session-negotiated) semantics.
 func (s *Session) InputBroker() *InputBroker {
