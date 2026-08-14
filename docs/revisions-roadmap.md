@@ -17,13 +17,12 @@ The official spec released `2026-07-28` on that date. mcp-go serves it on the
 modern path and advertises it from `server/discover`. The initialize handshake
 stops at `2025-11-25` because 2026-07-28 retires initialize.
 
-Phases 0–4 of this document shipped across v1.22–v1.25 plus the spec-alignment
-work. Checkboxes below are historical planning notes; treat the status table
-as authoritative.
+Phases 0–4 of this document shipped across v1.22–v1.26. Checkboxes below are
+historical planning notes; treat the status table as authoritative.
 
 ### Remaining (evaluated)
 
-There is **no `/v2` Go module path**. Phase 4 shipped on v1 (stateless default in v1.24.0; spec-alignment on this branch). A major-version import rewrite is not a planned release.
+There is **no `/v2` Go module path**. Phase 4 shipped on v1 (stateless default in v1.24.0; spec-alignment in v1.26.0). A major-version import rewrite is not a planned release.
 
 | Item | Verdict |
 |---|---|
@@ -62,7 +61,7 @@ Phase 1–3 checkboxes below that are still unmarked were implemented in v1.22�
 | 1 | 2025-03-26 | v1.23.0 | no (additive) |
 | 2 | 2025-06-18 | v1.24.0 | batching reversal (guarded) |
 | 3 | 2025-11-25 | v1.25.0 | validation-error channel |
-| 4 | 2026-07-28 | **v1.24.0+** | ServeHTTP defaults to stateless Streamable HTTP; no module-path break |
+| 4 | 2026-07-28 | **v1.26.0** | ServeHTTP defaults to stateless Streamable HTTP; no module-path break |
 
 ---
 
@@ -292,7 +291,7 @@ Phase 0  Foundation ........ wire dead methods, sessions, negotiation   v1.22.0
 Phase 1  2025-03-26 ........ Streamable HTTP, audio, OAuth doc            v1.23.0
 Phase 2  2025-06-18 ........ resource links, headers                      v1.24.0
 Phase 3  2025-11-25 ........ tasks-wired, icons, sampling-tools           v1.25.0
-Phase 4  2026-07-28 ........ stateless rewrite, MRTR, extensions          v1.24.0+
+Phase 4  2026-07-28 ........ stateless rewrite, MRTR, extensions          v1.26.0
 ```
 
 Phases 0–4 shipped on v1. Dual-era: initialize through `2025-11-25`; modern via

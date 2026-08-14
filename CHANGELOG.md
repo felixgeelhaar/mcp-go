@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.26.0](https://github.com/klarlabs-studio/mcp-go/compare/v1.25.0...v1.26.0) - 2026-08-14
+
 ### Changed — MCP spec alignment
 
 - **`ServeHTTP` defaults to Streamable HTTP** (stateless 2026-07-28 model).
