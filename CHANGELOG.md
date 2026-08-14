@@ -4,6 +4,44 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.25.0](https://github.com/klarlabs-studio/mcp-go/compare/v1.24.1...v1.25.0) - 2026-08-14
+
+### Fixed
+
+- **`jsonschema` descriptions were truncated at the first comma.** The struct
+  tag is comma-separated, which collides with prose:
+  `description=Maximum results to return (default 10, capped at 50)` split into
+  two parts, the second matched no directive, and it was dropped — advertising
+  `"Maximum results to return (default 10"`, cut mid-parenthesis.
+
+  Found in a real MCP server where 13 of 23 tags were losing text, including
+  one advertising `"What sort of document this is: runbook"` while six other
+  kinds were valid. For an MCP tool this text is the contract with the model,
+  and neither the server author nor the model can tell it was cut — the schema
+  is well-formed, just wrong.
+
+  A comma-separated part matching no known directive is now treated as a
+  continuation of the preceding description and rejoined with its comma.
+  Escaping would also have worked but silently changes what every existing tag
+  means; this way well-formed tags parse exactly as before and
+  previously-truncated ones keep their text. `required` still works wherever it
+  appears, including after a description containing commas.
+
+  Known edge, pinned by tests rather than papered over: a description *ending*
+  in something that looks like a directive (`...,default=x`) parses as one.
+  That ambiguity is inherent to splitting on commas.
+
+### Added
+
+- **`minimum`, `maximum`, `default` and `enum` in `jsonschema` tags are now
+  emitted.** They sat behind a TODO — accepted and discarded — while `Schema`
+  already had the fields to hold them, so a field carrying them advertised no
+  constraint at all.
+
+  `enum` takes `|` as its separator, since `,` delimits directives. Values are
+  typed, so `default=4` on an int encodes as `4` rather than `"4"`, which a
+  strict validator rejects against `type: integer`.
+
 ## [1.24.1](https://github.com/klarlabs-studio/mcp-go/compare/v1.24.0...v1.24.1) - 2026-08-10
 
 ### Fixed
