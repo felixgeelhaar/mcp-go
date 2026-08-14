@@ -54,6 +54,7 @@ func TestNegotiateVersion(t *testing.T) {
 		{"supported echoes back", "2024-11-05", "2024-11-05"},
 		{"empty falls back to default", "", protocol.MCPVersion},
 		{"unknown falls back to default", "2030-01-01", protocol.MCPVersion},
+		{"modern is not initialize-negotiated", protocol.ModernVersion, protocol.MCPVersion},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

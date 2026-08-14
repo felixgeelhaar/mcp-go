@@ -74,6 +74,39 @@ func TestClient_Initialize(t *testing.T) {
 		}
 	})
 
+	t.Run("Discover records supportedVersions", func(t *testing.T) {
+		transport := &mockTransport{
+			responses: []protocol.Response{
+				{
+					JSONRPC: "2.0",
+					ID:      json.RawMessage(`1`),
+					Result: map[string]any{
+						"resultType":        "complete",
+						"supportedVersions": []any{"2025-11-25", "2026-07-28"},
+						"serverInfo": map[string]any{
+							"name":    "disc-server",
+							"version": "3.0.0",
+						},
+						"capabilities": map[string]any{
+							"tools": map[string]any{},
+						},
+					},
+				},
+			},
+		}
+		c := client.New(transport)
+		info, err := c.Discover(context.Background())
+		if err != nil {
+			t.Fatalf("Discover: %v", err)
+		}
+		if info.Name != "disc-server" {
+			t.Errorf("name = %q", info.Name)
+		}
+		if len(info.SupportedVersions) != 2 {
+			t.Errorf("supportedVersions = %v", info.SupportedVersions)
+		}
+	})
+
 	t.Run("returns error on failed handshake", func(t *testing.T) {
 		transport := &mockTransport{
 			responses: []protocol.Response{

@@ -285,6 +285,16 @@ func WithStreamableStateless() HTTPOption {
 	}
 }
 
+// WithLegacyHTTP restores the retired HTTP+SSE split (POST /mcp JSON
+// request/response and GET /mcp/sse?clientId=). Use this to opt out of
+// Streamable HTTP, which ServeHTTP now enables by default.
+func WithLegacyHTTP() HTTPOption {
+	return func(h *HTTP) {
+		h.streamable = false
+		h.stateless = false
+	}
+}
+
 func NewHTTP(addr string, opts ...HTTPOption) *HTTP {
 	h := &HTTP{
 		addr:            addr,
@@ -653,6 +663,110 @@ const (
 	mcpNameHeader   = "Mcp-Name"
 )
 
+// streamableSessionData is the JSON blob stored against a Streamable HTTP
+// session id. ProtocolVersion is the initialize-negotiated revision, used to
+// decide whether subsequent POSTs must carry MCP-Protocol-Version.
+type streamableSessionData struct {
+	ProtocolVersion string `json:"protocolVersion"`
+}
+
+func negotiateInitVersion(params json.RawMessage) string {
+	var p struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if len(params) > 0 {
+		_ = json.Unmarshal(params, &p)
+	}
+	return protocol.NegotiateVersion(p.ProtocolVersion)
+}
+
+func protocolVersionFromBody(req *protocol.Request) string {
+	if req == nil || len(req.Params) == 0 {
+		return ""
+	}
+	var envelope struct {
+		Meta            map[string]json.RawMessage `json:"_meta"`
+		ProtocolVersion string                     `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(req.Params, &envelope); err != nil {
+		return ""
+	}
+	if raw, ok := envelope.Meta[protocol.MetaKeyProtocolVersion]; ok {
+		var v string
+		if json.Unmarshal(raw, &v) == nil && v != "" {
+			return v
+		}
+	}
+	return envelope.ProtocolVersion
+}
+
+func (h *HTTP) sessionProtocolVersion(ctx context.Context, sessionID string) string {
+	if h.sessionStore == nil || sessionID == "" {
+		return ""
+	}
+	data, err := h.sessionStore.GetSession(ctx, sessionID)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	var sd streamableSessionData
+	if json.Unmarshal(data, &sd) != nil {
+		return ""
+	}
+	return sd.ProtocolVersion
+}
+
+// checkProtocolVersionHeader enforces MCP-Protocol-Version (MCP 2025-06-18) on
+// Streamable HTTP POSTs. A present but unsupported value is HTTP 400. A missing
+// value is required for revisions ≥ 2025-06-18 (including the stateless
+// default) except initialize and server/discover, which are the version-probe
+// methods. Returns false when it has already written the error response.
+func (h *HTTP) checkProtocolVersionHeader(w http.ResponseWriter, r *http.Request, req *protocol.Request, sessionVer string) bool {
+	hdr := r.Header.Get(protocol.HeaderProtocolVersion)
+	bodyVer := protocolVersionFromBody(req)
+
+	if hdr != "" {
+		if !protocol.IsSupportedVersion(hdr) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(protocol.NewErrorResponse(req.ID,
+				protocol.NewUnsupportedProtocolVersion(protocol.SupportedVersions, hdr)))
+			return false
+		}
+		if bodyVer != "" && hdr != bodyVer {
+			// initialize body's protocolVersion is the client's *request*; the
+			// header should match that request, not the negotiated reply.
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(protocol.NewErrorResponse(req.ID,
+				protocol.NewHeaderMismatch(fmt.Sprintf(
+					"MCP-Protocol-Version header %q does not match body version %q", hdr, bodyVer))))
+			return false
+		}
+		return true
+	}
+
+	switch req.Method {
+	case protocol.MethodInitialize, protocol.MethodServerDiscover:
+		return true
+	}
+
+	ver := sessionVer
+	if ver == "" {
+		ver = bodyVer
+	}
+	if h.stateless && ver == "" {
+		ver = protocol.ModernVersion
+	}
+	if !protocol.RequiresProtocolVersionHeader(ver) {
+		return true
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(protocol.NewErrorResponse(req.ID,
+		protocol.NewInvalidParams("MCP-Protocol-Version header is required")))
+	return false
+}
+
 // routingParams carries the body fields the modern routing headers mirror. Only
 // the primary named target of a name-bearing method is captured; other params
 // are ignored so the parse stays cheap and tolerant of unknown fields.
@@ -785,8 +899,9 @@ func (h *HTTP) resolveStreamableSession(w http.ResponseWriter, r *http.Request, 
 		}
 		sessionID = minted
 		if h.sessionStore != nil {
-			// Store a marker so later requests validate against a known session.
-			if err := h.sessionStore.StoreSession(ctx, sessionID, []byte("{}")); err != nil {
+			ver := negotiateInitVersion(req.Params)
+			marker, _ := json.Marshal(streamableSessionData{ProtocolVersion: ver})
+			if err := h.sessionStore.StoreSession(ctx, sessionID, marker); err != nil {
 				http.Error(w, "failed to persist session", http.StatusInternalServerError)
 				return "", false
 			}
@@ -877,6 +992,14 @@ func (h *HTTP) handleStreamablePost(w http.ResponseWriter, r *http.Request, hand
 
 	sessionID, ctx, ok := h.resolveStreamablePOSTSession(w, r, ctx, &req)
 	if !ok {
+		return
+	}
+
+	sessionVer := ""
+	if sessionID != "" {
+		sessionVer = h.sessionProtocolVersion(ctx, sessionID)
+	}
+	if !h.checkProtocolVersionHeader(w, r, &req, sessionVer) {
 		return
 	}
 

@@ -112,8 +112,8 @@ Example: {"operation": "add", "a": 5, "b": 3} returns 8`,
 	fmt.Printf("Server listening on http://localhost%s\n", addr)
 	fmt.Println("Endpoints:")
 	fmt.Println("  GET  /.well-known/mcp - Server discovery metadata")
-	fmt.Println("  POST /mcp            - JSON-RPC requests")
-	fmt.Println("  GET  /mcp/sse        - Server-Sent Events")
+	fmt.Println("  POST /mcp            - Streamable HTTP JSON-RPC")
+	fmt.Println("  GET  /mcp            - Server-push SSE (stateful Streamable HTTP)")
 	fmt.Println("  GET  /health          - Health check")
 	fmt.Println("  GET  /healthz        - Readiness check")
 

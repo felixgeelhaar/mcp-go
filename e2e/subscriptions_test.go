@@ -53,7 +53,7 @@ func TestResourceSubscriptionPushE2E(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	addr := freePort(t)
-	go func() { _ = mcp.ServeHTTP(ctx, srv, addr) }()
+	go func() { _ = mcp.ServeHTTP(ctx, srv, addr, mcp.WithLegacyHTTP()) }()
 	waitForHealth(t, addr)
 
 	tr, err := client.NewHTTPTransport("http://" + addr)

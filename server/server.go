@@ -697,10 +697,58 @@ func (s *Server) ResourceTemplates() []ResourceTemplateInfo {
 
 // isTemplate checks if a URI contains template parameters.
 func isTemplate(uri string) bool {
+	return IsURITemplate(uri)
+}
+
+// IsURITemplate reports whether uri contains `{param}` placeholders and
+// therefore belongs in resources/templates/list rather than resources/list.
+func IsURITemplate(uri string) bool {
 	for i := 0; i < len(uri); i++ {
 		if uri[i] == '{' {
 			return true
 		}
 	}
 	return false
+}
+
+// ForProtocol returns a wire-safe icon object for the given protocol
+// revision. 2026-07-28 uses src/sizes/theme; earlier revisions use
+// uri/mimeType/size. Fields are filled from Normalize so an icon authored
+// for one era still serializes for the other — but only that era's keys
+// appear on the wire, so strict additionalProperties:false schemas accept it.
+func (i Icon) ForProtocol(version string) any {
+	n := i.Normalize()
+	if protocol.IsModernVersion(version) {
+		out := map[string]any{"src": n.Src}
+		if n.MimeType != "" {
+			out["mimeType"] = n.MimeType
+		}
+		if n.Sizes != "" {
+			out["sizes"] = n.Sizes
+		}
+		if n.Theme != "" {
+			out["theme"] = n.Theme
+		}
+		return out
+	}
+	out := map[string]any{"uri": n.URI}
+	if n.MimeType != "" {
+		out["mimeType"] = n.MimeType
+	}
+	if n.Size > 0 {
+		out["size"] = n.Size
+	}
+	return out
+}
+
+// IconsForProtocol maps a slice of icons onto the wire shape for version.
+func IconsForProtocol(icons []Icon, version string) []any {
+	if len(icons) == 0 {
+		return nil
+	}
+	out := make([]any, len(icons))
+	for i, icon := range icons {
+		out[i] = icon.ForProtocol(version)
+	}
+	return out
 }

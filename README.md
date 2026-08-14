@@ -127,7 +127,7 @@ srv.Use(
 Run the same server over:
 
 - **stdio** (CLI / agent use)
-- **HTTP + SSE** (service deployments)
+- **Streamable HTTP** (service deployments; `ServeHTTP` default)
 - **WebSocket** (bidirectional communication)
 - **gRPC** (high-performance service-to-service)
 
@@ -135,8 +135,14 @@ Run the same server over:
 // Stdio for CLI tools
 mcp.ServeStdio(ctx, srv)
 
-// HTTP + SSE for web services
+// Streamable HTTP (stateless 2026-07-28 by default)
 mcp.ServeHTTP(ctx, srv, ":8080")
+
+// Session-negotiated Streamable HTTP (2025-03-26)
+mcp.ServeHTTP(ctx, srv, ":8080", mcp.WithStreamableStateful())
+
+// Retired HTTP+SSE split
+mcp.ServeHTTP(ctx, srv, ":8080", mcp.WithLegacyHTTP())
 
 // WebSocket for bidirectional communication
 mcp.ServeWebSocket(ctx, srv, ":8081")

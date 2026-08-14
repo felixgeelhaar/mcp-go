@@ -34,6 +34,24 @@ func GetRequestMeta(ctx context.Context, key string) string {
 	return meta[key]
 }
 
+// protocolVersionKey is the context key for the negotiated (or per-request)
+// MCP protocol version.
+type protocolVersionKey struct{}
+
+// ContextWithProtocolVersion returns a context carrying the protocol version
+// in force for this request (initialize-negotiated, or `_meta` on the modern
+// path).
+func ContextWithProtocolVersion(ctx context.Context, version string) context.Context {
+	return context.WithValue(ctx, protocolVersionKey{}, version)
+}
+
+// ProtocolVersionFromContext returns the protocol version attached to ctx, or
+// empty string if none was set.
+func ProtocolVersionFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(protocolVersionKey{}).(string)
+	return v
+}
+
 // SetRequestMeta sets a metadata value in the context.
 // If no metadata exists, a new map is created.
 func SetRequestMeta(ctx context.Context, key, value string) context.Context {

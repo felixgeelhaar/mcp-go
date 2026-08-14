@@ -244,8 +244,14 @@ var (
 // Completion types for autocomplete support
 type CompletionRef = server.CompletionRef
 type CompletionArgument = server.CompletionArgument
+type CompletionContext = server.CompletionContext
 type CompletionResult = server.CompletionResult
 type CompletionHandler = server.CompletionHandler
+
+var (
+	ContextWithCompletionContext = server.ContextWithCompletionContext
+	CompletionContextFromContext = server.CompletionContextFromContext
+)
 
 // Resource template types
 type ResourceTemplateInfo = server.ResourceTemplateInfo
@@ -363,9 +369,14 @@ var (
 	DefaultCORSConfig = transport.DefaultCORSConfig
 	WithCORS          = transport.WithCORS
 	WithDefaultCORS   = transport.WithDefaultCORS
-	// WithStreamable enables the modern Streamable HTTP transport (MCP
-	// 2025-03-26): a single /mcp endpoint with Mcp-Session-Id and GET SSE.
-	WithStreamable = transport.WithStreamable
+	// WithStreamable enables Streamable HTTP on /mcp. As of v1.24.0 this is
+	// the stateless (MCP 2026-07-28) model. ServeHTTP applies it by default.
+	WithStreamable          = transport.WithStreamable
+	WithStreamableStateful  = transport.WithStreamableStateful
+	WithStreamableStateless = transport.WithStreamableStateless
+	// WithLegacyHTTP restores the pre-Streamable POST /mcp + GET /mcp/sse
+	// transport. Use this to opt out of the ServeHTTP Streamable default.
+	WithLegacyHTTP = transport.WithLegacyHTTP
 )
 
 // Shutdown configuration for HTTP transports.
@@ -406,8 +417,8 @@ func WithLogger(l Logger) ServeOption {
 
 // ToolFilterFunc decides whether a tool should be visible to (and
 // callable by) the caller represented by ctx. Returning false hides
-// the tool from tools/list AND causes tools/call to fail with a
-// not-found error, so the filter is the authoritative contract
+// the tool from tools/list AND causes tools/call to fail with
+// Invalid params (-32602), so the filter is the authoritative contract
 // rather than a display-only layer.
 //
 // When the predicate needs to vary by client, attach a caller value to the
@@ -492,9 +503,13 @@ func ServeStdio(ctx context.Context, srv *Server, opts ...ServeOption) error {
 	return t.Serve(ctx, handler)
 }
 
-// ServeHTTP runs the server using HTTP transport with SSE support.
-// This blocks until the context is canceled or an error occurs.
+// ServeHTTP runs the server using Streamable HTTP (the MCP HTTP transport
+// since 2025-03-26). The default is the stateless 2026-07-28 model
+// (WithStreamable). Pass WithStreamableStateful for session-negotiated
+// Streamable HTTP, or WithLegacyHTTP for the retired POST /mcp + GET /mcp/sse
+// split. This blocks until the context is canceled or an error occurs.
 func ServeHTTP(ctx context.Context, srv *Server, addr string, opts ...HTTPOption) error {
+	opts = prependStreamableDefault(opts)
 	t := transport.NewHTTP(addr, opts...)
 	wireResourceSubscriptions(srv, t)
 	handler := newRequestHandler(srv)
@@ -503,10 +518,19 @@ func ServeHTTP(ctx context.Context, srv *Server, addr string, opts ...HTTPOption
 
 // ServeHTTPWithMiddleware runs the server using HTTP transport with middleware support.
 func ServeHTTPWithMiddleware(ctx context.Context, srv *Server, addr string, httpOpts []HTTPOption, serveOpts ...ServeOption) error {
+	httpOpts = prependStreamableDefault(httpOpts)
 	t := transport.NewHTTP(addr, httpOpts...)
 	wireResourceSubscriptions(srv, t)
 	handler := newRequestHandler(srv, serveOpts...)
 	return t.Serve(ctx, handler)
+}
+
+// prependStreamableDefault makes Streamable HTTP the ServeHTTP default while
+// letting a later option (WithStreamableStateful, WithLegacyHTTP) override it.
+func prependStreamableDefault(opts []HTTPOption) []HTTPOption {
+	out := make([]HTTPOption, 0, len(opts)+1)
+	out = append(out, transport.WithStreamable())
+	return append(out, opts...)
 }
 
 // wireResourceSubscriptions connects the HTTP transport's server-push and
@@ -765,6 +789,7 @@ func (h *requestHandler) methodHandlers() map[string]func(context.Context, *prot
 		protocol.MethodTasksUpdate:            h.handleTasksUpdate,
 		protocol.MethodServerDiscover:         h.handleServerDiscover,
 		protocol.MethodSubscriptionsListen:    h.handleSubscriptionsListen,
+		protocol.MethodElicitationComplete:    h.handleElicitationComplete,
 	}
 }
 
@@ -798,6 +823,10 @@ func (h *requestHandler) handle(ctx context.Context, req *protocol.Request) (*pr
 		// MethodNotFound. See retiredInModern for the rationale per method.
 		if retiredInModern[req.Method] {
 			return nil, h.publicError(req, protocol.NewMethodNotFound(req.Method))
+		}
+	} else if session := server.SessionFromContext(ctx); session != nil {
+		if v := session.ProtocolVersion(); v != "" {
+			ctx = protocol.ContextWithProtocolVersion(ctx, v)
 		}
 	}
 
@@ -931,18 +960,21 @@ func (h *requestHandler) handleInitialize(ctx context.Context, req *protocol.Req
 	// with our preferred version and let the client decide whether to proceed.
 	negotiatedVersion := protocol.NegotiateVersion(params.ProtocolVersion)
 
-	// Record the client's advertised capabilities on the session (when a
-	// transport has attached one) so feature gating (sampling, elicitation)
-	// can consult them later in the connection.
-	if session := server.SessionFromContext(ctx); session != nil && len(params.Capabilities) > 0 {
-		session.SetClientCapabilitiesJSON(params.Capabilities)
+	// Record the client's advertised capabilities and negotiated version on the
+	// session (when a transport has attached one) so feature gating and
+	// era-specific serialization (icons) can consult them later.
+	if session := server.SessionFromContext(ctx); session != nil {
+		session.SetProtocolVersion(negotiatedVersion)
+		if len(params.Capabilities) > 0 {
+			session.SetClientCapabilitiesJSON(params.Capabilities)
+		}
 	}
 
 	capabilities := h.serverCapabilities(manifest)
 
 	result := map[string]any{
 		fieldProtocolVersion: negotiatedVersion,
-		"serverInfo":         serverInfoMap(manifest),
+		"serverInfo":         serverInfoMap(manifest, negotiatedVersion),
 		"capabilities":       capabilities,
 	}
 
@@ -956,7 +988,7 @@ func (h *requestHandler) handleInitialize(ctx context.Context, req *protocol.Req
 
 // serverInfoMap builds the serverInfo/implementation object shared by
 // initialize and server/discover.
-func serverInfoMap(manifest server.Manifest) map[string]any {
+func serverInfoMap(manifest server.Manifest, version string) map[string]any {
 	serverInfo := map[string]any{
 		fieldName:    manifest.Name,
 		fieldVersion: manifest.Version,
@@ -971,7 +1003,7 @@ func serverInfoMap(manifest server.Manifest) map[string]any {
 		serverInfo["websiteUrl"] = manifest.WebsiteURL
 	}
 	if len(manifest.Icons) > 0 {
-		serverInfo["icons"] = manifest.Icons
+		serverInfo["icons"] = server.IconsForProtocol(manifest.Icons, version)
 	}
 	if manifest.BuildInfo != nil {
 		serverInfo["buildInfo"] = manifest.BuildInfo // extension field, not in MCP spec
@@ -996,20 +1028,16 @@ func (h *requestHandler) extensionsMap() map[string]any {
 // replacement for the initialize handshake. It reports the server's supported
 // protocol versions, capabilities (including the extensions map), and identity
 // in a single cacheable result.
-func (h *requestHandler) handleServerDiscover(_ context.Context, req *protocol.Request) (*protocol.Response, error) {
+func (h *requestHandler) handleServerDiscover(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	manifest := h.srv.Manifest()
 	capabilities := h.serverCapabilities(manifest)
 	capabilities["extensions"] = h.extensionsMap()
 
-	supported := make([]string, 0, len(protocol.SupportedVersions)+1)
-	supported = append(supported, protocol.DraftVersion)
-	supported = append(supported, protocol.SupportedVersions...)
-
 	result := map[string]any{
 		"resultType":        protocol.ResultTypeComplete,
-		"supportedVersions": supported,
+		"supportedVersions": slices.Clone(protocol.SupportedVersions),
 		"capabilities":      capabilities,
-		"serverInfo":        serverInfoMap(manifest),
+		"serverInfo":        serverInfoMap(manifest, protocolVersionFrom(ctx)),
 	}
 	if instructions := h.srv.Instructions(); instructions != "" {
 		result["instructions"] = instructions
@@ -1017,7 +1045,73 @@ func (h *requestHandler) handleServerDiscover(_ context.Context, req *protocol.R
 	return protocol.NewResponse(req.ID, result), nil
 }
 
+// defaultListPageSize is the MCP list-method page size. Cursor pagination is
+// a spec SHOULD; 100 matches the completion-values cap and tasks/list.
+const defaultListPageSize = 100
+
+func protocolVersionFrom(ctx context.Context) string {
+	if v := protocol.ProtocolVersionFromContext(ctx); v != "" {
+		return v
+	}
+	if sess := server.SessionFromContext(ctx); sess != nil {
+		if v := sess.ProtocolVersion(); v != "" {
+			return v
+		}
+	}
+	return protocol.MCPVersion
+}
+
+func parseListCursor(params json.RawMessage) (string, error) {
+	if len(params) == 0 {
+		return "", nil
+	}
+	var p struct {
+		Cursor string `json:"cursor"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return "", protocol.NewInvalidParams(err.Error())
+	}
+	return p.Cursor, nil
+}
+
+func paginate[T any](items []T, cursor string, key func(T) string) ([]T, string, error) {
+	start := 0
+	if cursor != "" {
+		found := false
+		for i, item := range items {
+			if key(item) == cursor {
+				start = i + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, "", protocol.NewInvalidParams("invalid cursor")
+		}
+	}
+	if start >= len(items) {
+		return items[start:], "", nil
+	}
+	end := start + defaultListPageSize
+	if end >= len(items) {
+		return items[start:], "", nil
+	}
+	page := items[start:end]
+	return page, key(page[len(page)-1]), nil
+}
+
+func withNextCursor(result map[string]any, next string) {
+	if next != "" {
+		result["nextCursor"] = next
+	}
+}
+
 func (h *requestHandler) handleToolsList(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	cursor, err := parseListCursor(req.Params)
+	if err != nil {
+		return nil, err
+	}
+
 	tools := h.srv.Tools()
 
 	// Sort by name so tools/list returns a deterministic order on every call
@@ -1027,11 +1121,21 @@ func (h *requestHandler) handleToolsList(ctx context.Context, req *protocol.Requ
 		return cmp.Compare(a.Name, b.Name)
 	})
 
-	toolList := make([]map[string]any, 0, len(tools))
+	filtered := make([]server.ToolInfo, 0, len(tools))
 	for _, t := range tools {
 		if h.toolFilter != nil && !h.toolFilter(ctx, t.Name) {
 			continue
 		}
+		filtered = append(filtered, t)
+	}
+	page, next, err := paginate(filtered, cursor, func(t server.ToolInfo) string { return t.Name })
+	if err != nil {
+		return nil, err
+	}
+
+	ver := protocolVersionFrom(ctx)
+	toolList := make([]map[string]any, 0, len(page))
+	for _, t := range page {
 		item := map[string]any{
 			fieldName:     t.Name,
 			"description": t.Description,
@@ -1048,7 +1152,7 @@ func (h *requestHandler) handleToolsList(ctx context.Context, req *protocol.Requ
 			item["annotations"] = t.Annotations
 		}
 		if len(t.Icons) > 0 {
-			item["icons"] = t.Icons
+			item["icons"] = server.IconsForProtocol(t.Icons, ver)
 		}
 		// execution.taskSupport (MCP 2025-11-25): advertise only when the tool
 		// opts in, so a plain tool's listing is unchanged.
@@ -1064,7 +1168,7 @@ func (h *requestHandler) handleToolsList(ctx context.Context, req *protocol.Requ
 	result := map[string]any{
 		"tools": toolList,
 	}
-
+	withNextCursor(result, next)
 	return protocol.NewResponse(req.ID, result), nil
 }
 
@@ -1146,10 +1250,10 @@ func (h *requestHandler) handleToolsCall(ctx context.Context, req *protocol.Requ
 	// the authorisation contract callers rely on.
 	tool, ok := h.srv.GetTool(params.Name)
 	if !ok {
-		return nil, protocol.NewNotFound("tool not found: " + params.Name)
+		return nil, protocol.NewInvalidParams("tool not found: " + params.Name)
 	}
 	if h.toolFilter != nil && !h.toolFilter(ctx, params.Name) {
-		return nil, protocol.NewNotFound("tool not found: " + params.Name)
+		return nil, protocol.NewInvalidParams("tool not found: " + params.Name)
 	}
 
 	// Task augmentation (MCP 2025-11-25): reconcile the request against the
@@ -1294,13 +1398,34 @@ func applyStructuredResult(response map[string]any, v *server.StructuredResult) 
 }
 
 func (h *requestHandler) handleResourcesList(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
-	resources := h.srv.Resources()
+	cursor, err := parseListCursor(req.Params)
+	if err != nil {
+		return nil, err
+	}
 
-	resourceList := make([]map[string]any, 0, len(resources))
+	resources := h.srv.Resources()
+	filtered := make([]server.ResourceInfo, 0, len(resources))
 	for _, r := range resources {
+		// URI templates belong in resources/templates/list, not resources/list.
+		if server.IsURITemplate(r.URITemplate) {
+			continue
+		}
 		if h.resourceFilter != nil && !h.resourceFilter(ctx, r.URITemplate, r.Name) {
 			continue
 		}
+		filtered = append(filtered, r)
+	}
+	slices.SortFunc(filtered, func(a, b server.ResourceInfo) int {
+		return cmp.Compare(a.URITemplate, b.URITemplate)
+	})
+	page, next, err := paginate(filtered, cursor, func(r server.ResourceInfo) string { return r.URITemplate })
+	if err != nil {
+		return nil, err
+	}
+
+	ver := protocolVersionFrom(ctx)
+	resourceList := make([]map[string]any, 0, len(page))
+	for _, r := range page {
 		item := map[string]any{
 			fieldURI:  r.URITemplate,
 			fieldName: r.Name,
@@ -1318,7 +1443,7 @@ func (h *requestHandler) handleResourcesList(ctx context.Context, req *protocol.
 			item["annotations"] = r.Annotations
 		}
 		if len(r.Icons) > 0 {
-			item["icons"] = r.Icons
+			item["icons"] = server.IconsForProtocol(r.Icons, ver)
 		}
 		resourceList = append(resourceList, item)
 	}
@@ -1326,7 +1451,7 @@ func (h *requestHandler) handleResourcesList(ctx context.Context, req *protocol.
 	result := map[string]any{
 		"resources": resourceList,
 	}
-
+	withNextCursor(result, next)
 	return protocol.NewResponse(req.ID, result), nil
 }
 
@@ -1363,20 +1488,26 @@ func (h *requestHandler) handleResourcesRead(ctx context.Context, req *protocol.
 
 	result := map[string]any{
 		"contents": []map[string]any{
-			{
-				fieldURI:   content.URI,
-				"mimeType": content.MimeType,
-				fieldText:  content.Text,
-			},
+			resourceContentItem(content),
 		},
 	}
 
-	// Include blob if present
-	if content.Blob != "" {
-		result["contents"].([]map[string]any)[0]["blob"] = content.Blob
-	}
-
 	return protocol.NewResponse(req.ID, result), nil
+}
+
+// resourceContentItem builds a resources/read contents entry. The spec requires
+// text XOR blob: a blob-only resource must not also carry an empty text field.
+func resourceContentItem(content *server.ResourceContent) map[string]any {
+	item := map[string]any{fieldURI: content.URI}
+	if content.MimeType != "" {
+		item["mimeType"] = content.MimeType
+	}
+	if content.Blob != "" {
+		item["blob"] = content.Blob
+		return item
+	}
+	item[fieldText] = content.Text
+	return item
 }
 
 func (h *requestHandler) handleResourcesSubscribe(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
@@ -1468,13 +1599,30 @@ func (h *requestHandler) handleSubscriptionsListen(ctx context.Context, req *pro
 }
 
 func (h *requestHandler) handlePromptsList(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
-	prompts := h.srv.Prompts()
+	cursor, err := parseListCursor(req.Params)
+	if err != nil {
+		return nil, err
+	}
 
-	promptList := make([]map[string]any, 0, len(prompts))
+	prompts := h.srv.Prompts()
+	filtered := make([]server.PromptInfo, 0, len(prompts))
 	for _, p := range prompts {
 		if h.promptFilter != nil && !h.promptFilter(ctx, p.Name) {
 			continue
 		}
+		filtered = append(filtered, p)
+	}
+	slices.SortFunc(filtered, func(a, b server.PromptInfo) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+	page, next, err := paginate(filtered, cursor, func(p server.PromptInfo) string { return p.Name })
+	if err != nil {
+		return nil, err
+	}
+
+	ver := protocolVersionFrom(ctx)
+	promptList := make([]map[string]any, 0, len(page))
+	for _, p := range page {
 		item := map[string]any{
 			fieldName: p.Name,
 		}
@@ -1502,7 +1650,7 @@ func (h *requestHandler) handlePromptsList(ctx context.Context, req *protocol.Re
 			item["annotations"] = p.Annotations
 		}
 		if len(p.Icons) > 0 {
-			item["icons"] = p.Icons
+			item["icons"] = server.IconsForProtocol(p.Icons, ver)
 		}
 		promptList = append(promptList, item)
 	}
@@ -1510,7 +1658,7 @@ func (h *requestHandler) handlePromptsList(ctx context.Context, req *protocol.Re
 	result := map[string]any{
 		"prompts": promptList,
 	}
-
+	withNextCursor(result, next)
 	return protocol.NewResponse(req.ID, result), nil
 }
 
@@ -1529,10 +1677,10 @@ func (h *requestHandler) handlePromptsGet(ctx context.Context, req *protocol.Req
 	// see it, you can't reach it".
 	prompt, ok := h.srv.GetPrompt(params.Name)
 	if !ok {
-		return nil, protocol.NewNotFound("prompt not found: " + params.Name)
+		return nil, protocol.NewInvalidParams("prompt not found: " + params.Name)
 	}
 	if h.promptFilter != nil && !h.promptFilter(ctx, params.Name) {
-		return nil, protocol.NewNotFound("prompt not found: " + params.Name)
+		return nil, protocol.NewInvalidParams("prompt not found: " + params.Name)
 	}
 
 	// Execute prompt. Protocol errors pass through; other errors are returned
@@ -1575,11 +1723,13 @@ func (h *requestHandler) handleCompletion(ctx context.Context, req *protocol.Req
 	var params struct {
 		Ref      server.CompletionRef      `json:"ref"`
 		Argument server.CompletionArgument `json:"argument"`
+		Context  server.CompletionContext  `json:"context"`
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return nil, protocol.NewInvalidParams(err.Error())
 	}
 
+	ctx = server.ContextWithCompletionContext(ctx, params.Context)
 	result, err := h.srv.HandleCompletion(ctx, params.Ref, params.Argument)
 	if err != nil {
 		var mcpErr *protocol.Error
@@ -1619,12 +1769,30 @@ func (h *requestHandler) handleLoggingSetLevel(ctx context.Context, req *protoco
 // handleResourcesTemplatesList serves resources/templates/list, exposing the
 // URI-template resources the server registered.
 func (h *requestHandler) handleResourcesTemplatesList(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	cursor, err := parseListCursor(req.Params)
+	if err != nil {
+		return nil, err
+	}
+
 	templates := h.srv.ResourceTemplates()
-	list := make([]map[string]any, 0, len(templates))
+	filtered := make([]server.ResourceTemplateInfo, 0, len(templates))
 	for _, t := range templates {
 		if h.resourceFilter != nil && !h.resourceFilter(ctx, t.URITemplate, t.Name) {
 			continue
 		}
+		filtered = append(filtered, t)
+	}
+	slices.SortFunc(filtered, func(a, b server.ResourceTemplateInfo) int {
+		return cmp.Compare(a.URITemplate, b.URITemplate)
+	})
+	page, next, err := paginate(filtered, cursor, func(t server.ResourceTemplateInfo) string { return t.URITemplate })
+	if err != nil {
+		return nil, err
+	}
+
+	ver := protocolVersionFrom(ctx)
+	list := make([]map[string]any, 0, len(page))
+	for _, t := range page {
 		item := map[string]any{
 			"uriTemplate": t.URITemplate,
 			fieldName:     t.Name,
@@ -1642,11 +1810,32 @@ func (h *requestHandler) handleResourcesTemplatesList(ctx context.Context, req *
 			item["annotations"] = t.Annotations
 		}
 		if len(t.Icons) > 0 {
-			item["icons"] = t.Icons
+			item["icons"] = server.IconsForProtocol(t.Icons, ver)
 		}
 		list = append(list, item)
 	}
-	return protocol.NewResponse(req.ID, map[string]any{"resourceTemplates": list}), nil
+	result := map[string]any{"resourceTemplates": list}
+	withNextCursor(result, next)
+	return protocol.NewResponse(req.ID, result), nil
+}
+
+// handleElicitationComplete processes notifications/elicitation/complete
+// (MCP 2025-11-25 URL-mode elicitation). It is a notification, so it returns
+// no response body.
+func (h *requestHandler) handleElicitationComplete(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
+	var params struct {
+		ElicitationID string `json:"elicitationId"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return nil, protocol.NewInvalidParams(err.Error())
+	}
+	if params.ElicitationID == "" {
+		return nil, protocol.NewInvalidParams("elicitationId is required")
+	}
+	if session := server.SessionFromContext(ctx); session != nil {
+		session.NotifyElicitationComplete(params.ElicitationID)
+	}
+	return nil, nil
 }
 
 // relatedTaskMeta is the _meta key that associates a message with its task.

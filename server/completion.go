@@ -33,10 +33,34 @@ type CompletionResult struct {
 	HasMore bool     `json:"hasMore,omitempty"` // Whether more results exist
 }
 
+// CompletionContext carries previously-resolved argument values for
+// completion/complete (MCP 2025-06-18). Handlers read it from context via
+// CompletionContextFromContext so the CompletionHandler signature stays
+// backward compatible.
+type CompletionContext struct {
+	Arguments map[string]string `json:"arguments,omitempty"`
+}
+
+type completionContextKey struct{}
+
+// ContextWithCompletionContext attaches previously-resolved completion
+// arguments to ctx.
+func ContextWithCompletionContext(ctx context.Context, cc CompletionContext) context.Context {
+	return context.WithValue(ctx, completionContextKey{}, cc)
+}
+
+// CompletionContextFromContext returns the completion context attached to ctx,
+// or a zero value if none was set.
+func CompletionContextFromContext(ctx context.Context) CompletionContext {
+	cc, _ := ctx.Value(completionContextKey{}).(CompletionContext)
+	return cc
+}
+
 // CompletionRequest is the request for completion/complete.
 type CompletionRequest struct {
 	Ref      CompletionRef      `json:"ref"`
 	Argument CompletionArgument `json:"argument"`
+	Context  CompletionContext  `json:"context,omitempty"`
 }
 
 // CompletionResponse is the response for completion/complete.

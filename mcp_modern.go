@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"slices"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -23,11 +22,6 @@ import (
 // once via an initialize handshake. mcp-go is dual-era: a request without the
 // modern `_meta` keys is served under the legacy (session-negotiated) semantics
 // unchanged.
-
-// modernVersions is the set of stateless protocol revisions this server can
-// serve. Kept separate from protocol.SupportedVersions (which drives the legacy
-// initialize handshake) while the modern path is built out.
-var modernVersions = []string{protocol.DraftVersion}
 
 // modernMeta holds the reserved per-request _meta fields of a modern request.
 type modernMeta struct {
@@ -99,14 +93,15 @@ func (h *requestHandler) applyModern(ctx context.Context, method string, m *mode
 	if m.protocolVersion == "" || len(m.clientInfo) == 0 || len(m.clientCaps) == 0 {
 		return ctx, protocol.NewInvalidParams("modern request missing required _meta (protocolVersion, clientInfo, clientCapabilities)")
 	}
-	if method != protocol.MethodServerDiscover && !isModernVersion(m.protocolVersion) {
-		return ctx, protocol.NewUnsupportedProtocolVersion(modernVersions, m.protocolVersion)
+	if method != protocol.MethodServerDiscover && !protocol.IsModernVersion(m.protocolVersion) {
+		return ctx, protocol.NewUnsupportedProtocolVersion([]string{protocol.ModernVersion}, m.protocolVersion)
 	}
 
 	// Build a request-scoped session from the declared capabilities so
 	// per-request feature gating works without any connection state.
 	sess := server.NewSession("modern", nil, transport.NotificationSenderFromContext(ctx))
 	sess.SetClientCapabilitiesJSON(m.clientCaps)
+	sess.SetProtocolVersion(m.protocolVersion)
 	if m.logLevel != "" {
 		sess.SetLogLevel(server.LogLevel(m.logLevel))
 	}
@@ -115,11 +110,12 @@ func (h *requestHandler) applyModern(ctx context.Context, method string, m *mode
 	// recorded as pending for an input_required result on the first round.
 	sess.SetInputBroker(server.NewInputBroker(m.inputResponses, m.requestState))
 	ctx = withRemoteTraceContext(ctx, m)
+	ctx = protocol.ContextWithProtocolVersion(ctx, m.protocolVersion)
 	return server.ContextWithSession(ctx, sess), nil
 }
 
 // withRemoteTraceContext joins the caller's distributed trace using the W3C
-// Trace Context carried in _meta, so spans started within a handler parent onto
+// Trace Context carried in `_meta`, so spans started within a handler parent onto
 // the client's trace. It uses the globally-registered propagator (a no-op
 // unless the application installed one). When a span is already active on ctx —
 // the OTel tracing middleware runs outside this path and joins the trace itself
@@ -143,10 +139,6 @@ func withRemoteTraceContext(ctx context.Context, m *modernMeta) context.Context 
 		carrier["baggage"] = m.baggage
 	}
 	return otel.GetTextMapPropagator().Extract(ctx, carrier)
-}
-
-func isModernVersion(v string) bool {
-	return slices.Contains(modernVersions, v)
 }
 
 // newSubscriptionID mints a stable, non-empty identifier for a

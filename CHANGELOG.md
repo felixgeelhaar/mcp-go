@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — MCP spec alignment
+
+- **`ServeHTTP` defaults to Streamable HTTP** (stateless 2026-07-28 model).
+  The retired POST `/mcp` + GET `/mcp/sse?clientId=` split is opt-in via
+  `WithLegacyHTTP()`. Session-negotiated Streamable HTTP remains
+  `WithStreamableStateful()`. `transport.NewHTTP` without options is still
+  the legacy split so low-level tests and custom muxes are unchanged.
+- **`resources/list` no longer includes URI templates.** Templates are only
+  advertised on `resources/templates/list`, matching the spec split between
+  `Resource.uri` and `ResourceTemplate.uriTemplate`.
+- **Unknown tools and prompts return `-32602` Invalid params** rather than
+  the non-schema `-32001` Not found. Resource-not-found stays `-32001` on
+  the legacy path and is remapped to `-32602` for modern callers.
+- **Blob-only `resources/read` contents omit empty `text`.** The spec is
+  text XOR blob on a content item.
+- **Icons serialize per negotiated protocol version.** 2025-11-25 listings
+  emit `uri`/`size`; 2026-07-28 emits `src`/`sizes`/`theme`. Both eras no
+  longer appear on the same object.
+- **`2026-07-28` is in `SupportedVersions`** as `protocol.ModernVersion`
+  (published spec, not a draft). `initialize` still negotiates only
+  initialize-era revisions (`InitializeVersions`); requesting `2026-07-28`
+  via initialize falls back to `2025-11-25` because that revision has no
+  handshake. `DraftVersion` remains as a deprecated alias.
+- **Client default protocol version is `2025-11-25`.** HTTP requests send
+  `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name`. `Client.Discover`
+  speaks `server/discover`. Icon parsing accepts modern `src`/`sizes`/`theme`.
+
+### Added
+
+- **Cursor pagination** on `tools/list`, `resources/list`, `prompts/list`,
+  and `resources/templates/list` (page size 100, `nextCursor`, invalid
+  cursor → `-32602`).
+- **`MCP-Protocol-Version` enforcement** on Streamable HTTP POSTs for
+  revisions ≥ 2025-06-18 (missing or unsupported → HTTP 400).
+  `initialize` and `server/discover` remain the version-probe exceptions.
+- **`completion/complete` `context`** (previously-resolved arguments,
+  MCP 2025-06-18) is parsed and attached via `CompletionContextFromContext`.
+- **`notifications/elicitation/complete`** unblocks
+  `Session.WaitElicitationComplete` for URL-mode elicitation.
+
 ## [1.25.0](https://github.com/klarlabs-studio/mcp-go/compare/v1.24.1...v1.25.0) - 2026-08-14
 
 ### Fixed

@@ -33,6 +33,14 @@ type Session struct {
 	// Client capabilities (what the client supports)
 	clientCaps ClientCapabilities
 
+	// protocolVersion is the initialize-negotiated (or per-request modern)
+	// protocol revision in force for this session.
+	protocolVersion string
+
+	// elicitationComplete signals URL-mode elicitation completion
+	// (notifications/elicitation/complete), keyed by elicitationId.
+	elicitationComplete map[string]chan struct{}
+
 	// broker fulfills server→client requests (sampling, elicitation, roots) via
 	// the stateless MRTR model (MCP 2026-07-28) when set — the request-scoped
 	// replacement for a RequestSender. Nil under legacy session semantics.
@@ -89,12 +97,13 @@ func WithRootsChangeCallback(callback func([]Root)) SessionOption {
 // NewSession creates a new session with the given ID and options.
 func NewSession(id string, sender RequestSender, notifier NotificationSender, opts ...SessionOption) *Session {
 	s := &Session{
-		id:            id,
-		sender:        sender,
-		notifier:      notifier,
-		logLevel:      LogLevelInfo,
-		cancellation:  NewCancellationManager(),
-		subscriptions: NewSubscriptionManager(),
+		id:                  id,
+		sender:              sender,
+		notifier:            notifier,
+		logLevel:            LogLevelInfo,
+		cancellation:        NewCancellationManager(),
+		subscriptions:       NewSubscriptionManager(),
+		elicitationComplete: make(map[string]chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -114,6 +123,69 @@ func (s *Session) ClientCapabilities() ClientCapabilities {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.clientCaps
+}
+
+// SetProtocolVersion records the protocol revision in force for this session.
+func (s *Session) SetProtocolVersion(v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.protocolVersion = v
+}
+
+// ProtocolVersion returns the protocol revision in force for this session,
+// or empty if none has been recorded.
+func (s *Session) ProtocolVersion() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.protocolVersion
+}
+
+// NotifyElicitationComplete signals that a url-mode elicitation with the given
+// id has finished (notifications/elicitation/complete). Waiters unblocked by
+// WaitElicitationComplete return nil. Unknown ids are ignored.
+func (s *Session) NotifyElicitationComplete(id string) {
+	if s == nil || id == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch, ok := s.elicitationComplete[id]
+	if !ok {
+		ch = make(chan struct{})
+		s.elicitationComplete[id] = ch
+		close(ch)
+		return
+	}
+	select {
+	case <-ch:
+		// already complete
+	default:
+		close(ch)
+	}
+}
+
+// WaitElicitationComplete blocks until notifications/elicitation/complete
+// arrives for id, or ctx is done.
+func (s *Session) WaitElicitationComplete(ctx context.Context, id string) error {
+	if s == nil {
+		return fmt.Errorf("elicitation complete: no session")
+	}
+	if id == "" {
+		return fmt.Errorf("elicitation complete: empty id")
+	}
+	s.mu.Lock()
+	ch, ok := s.elicitationComplete[id]
+	if !ok {
+		ch = make(chan struct{})
+		s.elicitationComplete[id] = ch
+	}
+	s.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-ch:
+		return nil
+	}
 }
 
 // SetClientCapabilities updates the client's capabilities.

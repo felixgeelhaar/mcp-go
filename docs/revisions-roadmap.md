@@ -3,18 +3,19 @@
 Plan to bring mcp-go current across **every** MCP spec revision, from the pinned
 `2024-11-05` baseline through the `2026-07-28` release candidate.
 
-**Status of the world (July 2026):**
+**Status of the world (August 2026):**
 
 | Revision | Role | mcp-go today |
 |---|---|---|
-| `2024-11-05` | original | pinned & hard-returned (no negotiation) |
-| `2025-03-26` | Streamable HTTP, annotations, OAuth 2.1, batching | partial (annotations ✅, transport ❌) |
-| `2025-06-18` | elicitation, structured output, resource links | partial (features ✅, wiring ❌) |
-| `2025-11-25` | **current published** — tasks, icons, sampling-with-tools | partial (tasks unwired) |
-| `2026-07-28` | RC — stateless rewrite | none |
+| `2024-11-05` | original | negotiated via initialize |
+| `2025-03-26` | Streamable HTTP, annotations | certified |
+| `2025-06-18` | elicitation, structured output, resource links | certified |
+| `2025-11-25` | tasks, icons, sampling-with-tools | **initialize default (`MCPVersion`)** |
+| `2026-07-28` | **current published** — stateless rewrite | dual-era: `server/discover` + per-request `_meta`; `ModernVersion` in `SupportedVersions`; initialize does not speak this revision |
 
-The official `modelcontextprotocol/go-sdk` negotiates **all five** revisions and
-ships a `2026-07-28` beta. Closing the version gap is the strategic objective.
+The official spec released `2026-07-28` on that date. mcp-go serves it on the
+modern path and advertises it from `server/discover`. The initialize handshake
+stops at `2025-11-25` because 2026-07-28 retires initialize.
 
 ---
 

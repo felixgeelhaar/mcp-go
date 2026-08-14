@@ -43,8 +43,9 @@ type HTTPTransport struct {
 	// Streamable-HTTP session state (MCP 2025-03-26). A server may assign a
 	// session id on the initialize response (Mcp-Session-Id) which subsequent
 	// requests must echo. Guarded by mu since Send may be called concurrently.
-	mu        sync.Mutex
-	sessionID string
+	mu              sync.Mutex
+	sessionID       string
+	protocolVersion string
 }
 
 // DefaultMaxResponseBytes bounds a single JSON-RPC HTTP response body. It
@@ -182,7 +183,19 @@ func NewHTTPTransport(baseURL string, opts ...HTTPTransportOption) (*HTTPTranspo
 		headers:          headers,
 		clientID:         newClientID(),
 		maxResponseBytes: options.maxResponseBytes,
+		protocolVersion:  protocol.MCPVersion,
 	}, nil
+}
+
+// SetProtocolVersion updates the MCP-Protocol-Version header sent on subsequent
+// requests (typically after initialize negotiates a revision).
+func (t *HTTPTransport) SetProtocolVersion(v string) {
+	if t == nil || v == "" {
+		return
+	}
+	t.mu.Lock()
+	t.protocolVersion = v
+	t.mu.Unlock()
 }
 
 // newClientID mints a random identifier correlating POSTs with the SSE stream.
@@ -263,12 +276,20 @@ func (t *HTTPTransport) Send(ctx context.Context, req *protocol.Request) (*proto
 			httpReq.Header.Add(k, v)
 		}
 	}
-	// Echo the session id on every request after the server assigns one.
 	t.mu.Lock()
 	sid := t.sessionID
+	ver := t.protocolVersion
 	t.mu.Unlock()
 	if sid != "" {
 		httpReq.Header.Set("Mcp-Session-Id", sid)
+	}
+	if ver == "" {
+		ver = protocol.MCPVersion
+	}
+	httpReq.Header.Set(protocol.HeaderProtocolVersion, ver)
+	httpReq.Header.Set(protocol.HeaderMethod, req.Method)
+	if name, ok := clientRouteName(req); ok && name != "" {
+		httpReq.Header.Set(protocol.HeaderName, name)
 	}
 
 	resp, err := t.httpClient.Do(httpReq)
@@ -401,4 +422,25 @@ func truncate(b []byte, n int) string {
 		return string(b)
 	}
 	return string(b[:n]) + "...(truncated)"
+}
+
+func clientRouteName(req *protocol.Request) (string, bool) {
+	var params struct {
+		Name string `json:"name"`
+		URI  string `json:"uri"`
+	}
+	switch req.Method {
+	case protocol.MethodToolsCall, protocol.MethodPromptsGet:
+		if len(req.Params) > 0 {
+			_ = json.Unmarshal(req.Params, &params)
+		}
+		return params.Name, true
+	case protocol.MethodResourcesRead:
+		if len(req.Params) > 0 {
+			_ = json.Unmarshal(req.Params, &params)
+		}
+		return params.URI, true
+	default:
+		return "", false
+	}
 }

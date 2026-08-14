@@ -60,9 +60,12 @@ type Client struct {
 
 // Icon represents an icon for UI display.
 type Icon struct {
-	URI      string `json:"uri"`
+	URI      string `json:"uri,omitempty"`
+	Src      string `json:"src,omitempty"`
 	MimeType string `json:"mimeType,omitempty"`
 	Size     int    `json:"size,omitempty"`
+	Sizes    string `json:"sizes,omitempty"`
+	Theme    string `json:"theme,omitempty"`
 }
 
 // BuildInfo contains build metadata for debugging and version verification.
@@ -73,15 +76,16 @@ type BuildInfo struct {
 
 // ServerInfo contains information about the connected server.
 type ServerInfo struct {
-	Name            string
-	Version         string
-	Title           string
-	Description     string
-	WebsiteURL      string
-	Icons           []Icon
-	BuildInfo       *BuildInfo
-	ProtocolVersion string
-	Capabilities    Capabilities
+	Name              string
+	Version           string
+	Title             string
+	Description       string
+	WebsiteURL        string
+	Icons             []Icon
+	BuildInfo         *BuildInfo
+	ProtocolVersion   string
+	SupportedVersions []string
+	Capabilities      Capabilities
 }
 
 // Capabilities describes what features the server supports.
@@ -198,7 +202,7 @@ func New(transport Transport, opts ...Option) *Client {
 		timeout:     30 * time.Second,
 		clientName:  "mcp-go-client",
 		clientVer:   "1.0.0",
-		protocolVer: "2024-11-05",
+		protocolVer: protocol.MCPVersion,
 	}
 
 	for _, opt := range opts {
@@ -220,11 +224,23 @@ func parseIcons(icons []any) []Icon {
 			if uri, ok := m["uri"].(string); ok {
 				icon.URI = uri
 			}
+			if src, ok := m["src"].(string); ok {
+				icon.Src = src
+				if icon.URI == "" {
+					icon.URI = src
+				}
+			}
 			if mime, ok := m["mimeType"].(string); ok {
 				icon.MimeType = mime
 			}
 			if size, ok := m["size"].(float64); ok {
 				icon.Size = int(size)
+			}
+			if sizes, ok := m["sizes"].(string); ok {
+				icon.Sizes = sizes
+			}
+			if theme, ok := m["theme"].(string); ok {
+				icon.Theme = theme
 			}
 			result = append(result, icon)
 		}
@@ -311,6 +327,81 @@ func (c *Client) Initialize(ctx context.Context) (*ServerInfo, error) {
 	c.serverInfo = info
 	c.mu.Unlock()
 
+	if setter, ok := c.transport.(protocolVersionSetter); ok && info.ProtocolVersion != "" {
+		setter.SetProtocolVersion(info.ProtocolVersion)
+	}
+
+	return info, nil
+}
+
+type protocolVersionSetter interface {
+	SetProtocolVersion(string)
+}
+
+// Discover calls server/discover (MCP 2026-07-28), the stateless replacement
+// for initialize. The client sends modern `_meta` and records the advertised
+// supportedVersions.
+func (c *Client) Discover(ctx context.Context) (*ServerInfo, error) {
+	if setter, ok := c.transport.(protocolVersionSetter); ok {
+		setter.SetProtocolVersion(protocol.ModernVersion)
+	}
+	params := map[string]any{
+		"_meta": map[string]any{
+			protocol.MetaKeyProtocolVersion:    protocol.ModernVersion,
+			protocol.MetaKeyClientInfo:         map[string]any{fieldName: c.opts.clientName, fieldVersion: c.opts.clientVer},
+			protocol.MetaKeyClientCapabilities: map[string]any{},
+		},
+	}
+	resp, err := c.call(ctx, protocol.MethodServerDiscover, params)
+	if err != nil {
+		return nil, fmt.Errorf("discover: %w", err)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("discover: %w", ErrInvalidResult)
+	}
+	info := &ServerInfo{ProtocolVersion: protocol.ModernVersion}
+	if versions, ok := result["supportedVersions"].([]any); ok {
+		for _, v := range versions {
+			if s, ok := v.(string); ok {
+				info.SupportedVersions = append(info.SupportedVersions, s)
+			}
+		}
+	}
+	if si, ok := result["serverInfo"].(map[string]any); ok {
+		if name, ok := si[fieldName].(string); ok {
+			info.Name = name
+		}
+		if ver, ok := si[fieldVersion].(string); ok {
+			info.Version = ver
+		}
+		if title, ok := si["title"].(string); ok {
+			info.Title = title
+		}
+		if desc, ok := si["description"].(string); ok {
+			info.Description = desc
+		}
+		if url, ok := si["websiteUrl"].(string); ok {
+			info.WebsiteURL = url
+		}
+		if icons, ok := si["icons"].([]any); ok {
+			info.Icons = parseIcons(icons)
+		}
+	}
+	if caps, ok := result["capabilities"].(map[string]any); ok {
+		if _, ok := caps["tools"]; ok {
+			info.Capabilities.Tools = true
+		}
+		if _, ok := caps["resources"]; ok {
+			info.Capabilities.Resources = true
+		}
+		if _, ok := caps["prompts"]; ok {
+			info.Capabilities.Prompts = true
+		}
+	}
+	c.mu.Lock()
+	c.serverInfo = info
+	c.mu.Unlock()
 	return info, nil
 }
 

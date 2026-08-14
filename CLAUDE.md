@@ -78,7 +78,7 @@ mcp-go/
 ├── transport/          # Transport implementations
 │   ├── transport.go    # Transport interface
 │   ├── stdio.go        # stdio transport for CLI tools
-│   ├── http.go         # HTTP + SSE transport
+│   ├── http.go         # Streamable HTTP (+ legacy HTTP+SSE opt-in)
 │   ├── websocket.go    # WebSocket transport
 │   ├── cors.go         # CORS middleware
 │   └── shutdown.go     # Graceful shutdown manager
@@ -179,17 +179,22 @@ Coverage is enforced via `coverctl check`. See `.coverctl.yaml` for thresholds.
 ## MCP Methods Implemented
 
 **Server Methods (Client → Server):**
-- `initialize` - Server initialization handshake
-- `tools/list` - List available tools
+- `initialize` - Server initialization handshake (initialize-era, through 2025-11-25)
+- `server/discover` - Stateless discovery (2026-07-28)
+- `tools/list` - List available tools (cursor pagination)
 - `tools/call` - Execute a tool
-- `resources/list` - List available resources
+- `resources/list` - List concrete resources (templates excluded)
 - `resources/read` - Read resource content
-- `resources/subscribe` - Subscribe to resource updates
-- `resources/unsubscribe` - Unsubscribe from resource updates
+- `resources/templates/list` - List URI-template resources
+- `resources/subscribe` - Subscribe to resource updates (legacy)
+- `resources/unsubscribe` - Unsubscribe from resource updates (legacy)
+- `subscriptions/listen` - Stateless subscription stream (2026-07-28)
 - `prompts/list` - List available prompts
 - `prompts/get` - Get prompt with arguments
-- `logging/setLevel` - Set minimum log level
-- `ping` - Health check
+- `completion/complete` - Argument autocomplete
+- `logging/setLevel` - Set minimum log level (legacy)
+- `ping` - Health check (legacy)
+- `tasks/get`, `tasks/result`, `tasks/cancel`, `tasks/list`, `tasks/update`
 
 **Client Methods (Server → Client):**
 - `sampling/createMessage` - Server requests LLM completion
@@ -205,6 +210,7 @@ Coverage is enforced via `coverctl check`. See `.coverctl.yaml` for thresholds.
 - `notifications/tools/list_changed` - Tool list changed
 - `notifications/prompts/list_changed` - Prompt list changed
 - `notifications/roots/list_changed` - Roots changed (client → server)
+- `notifications/elicitation/complete` - URL-mode elicitation finished
 - `notifications/channel/message` - Server pushes channel message to client
 
 ## v1.0 Features (Complete)
@@ -219,7 +225,8 @@ Coverage is enforced via `coverctl check`. See `.coverctl.yaml` for thresholds.
 
 **Transports:**
 - [x] stdio transport for CLI tools
-- [x] HTTP + SSE transport
+- [x] HTTP + SSE transport (legacy, `WithLegacyHTTP`)
+- [x] Streamable HTTP transport (ServeHTTP default)
 - [x] WebSocket transport
 - [x] Graceful shutdown with connection draining
 
