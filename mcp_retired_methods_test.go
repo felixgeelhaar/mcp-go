@@ -24,6 +24,8 @@ func TestRetiredMethods_GatedOffForModern(t *testing.T) {
 		protocol.MethodLoggingSetLevel,
 		protocol.MethodResourcesSubscribe,
 		protocol.MethodResourcesUnsubscribe,
+		protocol.MethodTasksResult,
+		protocol.MethodElicitationComplete,
 	}
 
 	for _, method := range retired {

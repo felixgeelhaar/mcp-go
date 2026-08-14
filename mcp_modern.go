@@ -194,10 +194,11 @@ func withResultType(resp *protocol.Response) {
 // (server/discover + per-request _meta replace the handshake), logging/setLevel
 // (the log level travels in _meta), the resources subscribe/unsubscribe pair and
 // the roots list-changed notification (subscriptions/listen + MRTR replace
-// them), and tasks/list (the tasks extension favors direct handles). A modern
-// request for any of these gets MethodNotFound. Legacy (<=2025-11-25) callers
-// never enter the modern path, so their initialize/ping back-compat probe is
-// untouched.
+// them), tasks/list (the tasks extension favors direct handles), tasks/result
+// (replaced by polling tasks/get), and notifications/elicitation/complete
+// (MRTR retries replace the URL-mode completion signal). A modern request for
+// any of these gets MethodNotFound. Legacy (<=2025-11-25) callers never enter
+// the modern path, so their initialize/ping back-compat probe is untouched.
 var retiredInModern = map[string]bool{
 	protocol.MethodInitialize:           true,
 	protocol.MethodInitialized:          true,
@@ -207,6 +208,8 @@ var retiredInModern = map[string]bool{
 	protocol.MethodResourcesUnsubscribe: true,
 	protocol.MethodRootsListChanged:     true,
 	protocol.MethodTasksList:            true,
+	protocol.MethodTasksResult:          true,
+	protocol.MethodElicitationComplete:  true,
 }
 
 // cacheableMethods are the read/list operations whose results carry a

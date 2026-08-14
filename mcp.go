@@ -59,6 +59,17 @@ const (
 	fieldURI             = "uri"
 	fieldTask            = "task"
 	fieldTaskID          = "taskId"
+	fieldStatus          = "status"
+	fieldCreatedAt       = "createdAt"
+	fieldLastUpdatedAt   = "lastUpdatedAt"
+	fieldTTLMs           = "ttlMs"
+	fieldPollIntervalMs  = "pollIntervalMs"
+	fieldStatusMessage   = "statusMessage"
+	fieldResult          = "result"
+	fieldError           = "error"
+	fieldResultType      = "resultType"
+	fieldCode            = "code"
+	fieldMessage         = "message"
 )
 
 // Re-export core types for convenience
@@ -258,8 +269,10 @@ type ResourceTemplateInfo = server.ResourceTemplateInfo
 
 // Task-augmented request types (MCP 2025-11-25 / tasks extension). Declare a
 // tool's task support with .TaskSupport(mcp.TaskSupportOptional|Required).
-// Clients may send `task` on tools/call and poll tasks/get. On the modern
-// path a Required tool returns a task handle without that per-request field.
+// Legacy clients may send `task` on tools/call and poll tasks/get plus
+// tasks/result. On the modern path Required tools return an unsolicited handle
+// (the per-request `task` field is ignored) and clients poll tasks/get for the
+// inlined result.
 type AugTask = server.AugTask
 type TaskSupport = server.TaskSupport
 
@@ -819,9 +832,9 @@ func (h *requestHandler) handle(ctx context.Context, req *protocol.Request) (*pr
 		}
 		// The stateless 2026-07-28 redesign retires the initialize/ping lifecycle,
 		// logging/setLevel, resources subscribe/unsubscribe, the roots list-changed
-		// notification, and tasks/list. Those methods stay for negotiated
-		// <=2025-11-25 sessions (which never reach this path); a modern caller gets
-		// MethodNotFound. See retiredInModern for the rationale per method.
+		// notification, tasks/list, tasks/result, and elicitation/complete. Those
+		// methods stay for negotiated <=2025-11-25 sessions (which never reach this
+		// path); a modern caller gets MethodNotFound. See retiredInModern.
 		if retiredInModern[req.Method] {
 			return nil, h.publicError(req, protocol.NewMethodNotFound(req.Method))
 		}
@@ -1074,6 +1087,10 @@ func protocolVersionFrom(ctx context.Context) string {
 	return protocol.MCPVersion
 }
 
+func isModern(ctx context.Context) bool {
+	return protocol.IsModernVersion(protocolVersionFrom(ctx))
+}
+
 func parseListCursor(params json.RawMessage) (string, error) {
 	if len(params) == 0 {
 		return "", nil
@@ -1215,15 +1232,19 @@ func reconcileTaskSupport(mode server.TaskSupport, augmented bool, name string) 
 }
 
 // resolveTaskAugmentation reports whether this tools/call should run as a task.
-// On the modern path a TaskSupportRequired tool is always a task, even without
-// a per-request `task` field (SEP-2663 unsolicited handles).
+// On the modern path the CallToolRequest.task field is retired (SEP-2663):
+// servers MUST ignore it. A TaskSupportRequired tool is always a task
+// (unsolicited handle); optional tools run synchronously unless the server
+// chooses otherwise. Legacy initialize-era callers keep the 2025-11-25
+// per-request opt-in.
 func resolveTaskAugmentation(ctx context.Context, mode server.TaskSupport, name string, hasTaskField bool) (bool, error) {
-	augmented := hasTaskField
-	if !augmented && protocol.IsModernVersion(protocolVersionFrom(ctx)) &&
-		mode == server.TaskSupportRequired {
-		augmented = true
+	if isModern(ctx) {
+		if mode == server.TaskSupportRequired {
+			return true, nil
+		}
+		return false, nil
 	}
-	return augmented, reconcileTaskSupport(mode, augmented, name)
+	return hasTaskField, reconcileTaskSupport(mode, hasTaskField, name)
 }
 
 // startAugmentedToolCall runs a tools/call as a background task and returns the
@@ -1253,6 +1274,9 @@ func (h *requestHandler) startAugmentedToolCall(ctx context.Context, req *protoc
 	})
 	if err != nil {
 		return nil, err
+	}
+	if isModern(ctx) {
+		return protocol.NewResponse(req.ID, modernCreateTaskResult(task)), nil
 	}
 	return protocol.NewResponse(req.ID, map[string]any{fieldTask: task}), nil
 }
@@ -1307,8 +1331,8 @@ func (h *requestHandler) handleToolsCall(ctx context.Context, req *protocol.Requ
 	}
 
 	// Task-augmented call: accept immediately, run in the background, and return
-	// a CreateTaskResult. The requestor then polls tasks/get and fetches the
-	// outcome via tasks/result.
+	// a CreateTaskResult. The requestor then polls tasks/get (modern inlines
+	// the terminal result; legacy fetches it via tasks/result).
 	if augmented {
 		var ttl *int64
 		if params.Task != nil {
@@ -1861,11 +1885,10 @@ func (h *requestHandler) handleElicitationComplete(ctx context.Context, req *pro
 	return nil, nil
 }
 
-// relatedTaskMeta is the _meta key that associates a message with its task.
-const relatedTaskMetaKey = "io.modelcontextprotocol/related-task"
-
-// handleTasksGet serves tasks/get: return the task's current state.
-func (h *requestHandler) handleTasksGet(_ context.Context, req *protocol.Request) (*protocol.Response, error) {
+// handleTasksGet serves tasks/get: return the task's current state. On the
+// modern path the response is a DetailedTask (ttlMs/pollIntervalMs, inlined
+// result or error when terminal) with resultType "complete".
+func (h *requestHandler) handleTasksGet(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	var params struct {
 		TaskID string `json:"taskId"`
 	}
@@ -1875,6 +1898,9 @@ func (h *requestHandler) handleTasksGet(_ context.Context, req *protocol.Request
 	task, ok := h.srv.GetAugTask(params.TaskID)
 	if !ok {
 		return nil, protocol.NewInvalidParams("task not found: " + params.TaskID)
+	}
+	if isModern(ctx) {
+		return protocol.NewResponse(req.ID, modernGetTaskResult(task)), nil
 	}
 	return protocol.NewResponse(req.ID, task), nil
 }
@@ -1918,7 +1944,7 @@ func (h *requestHandler) handleTasksResult(ctx context.Context, req *protocol.Re
 }
 
 // handleTasksCancel serves tasks/cancel.
-func (h *requestHandler) handleTasksCancel(_ context.Context, req *protocol.Request) (*protocol.Response, error) {
+func (h *requestHandler) handleTasksCancel(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	var params struct {
 		TaskID string `json:"taskId"`
 	}
@@ -1930,13 +1956,17 @@ func (h *requestHandler) handleTasksCancel(_ context.Context, req *protocol.Requ
 		// Both unknown-task and already-terminal map to -32602 per spec.
 		return nil, protocol.NewInvalidParams(err.Error())
 	}
+	if isModern(ctx) {
+		// SEP-2663: cancel acknowledges with an empty result.
+		return protocol.NewResponse(req.ID, map[string]any{}), nil
+	}
 	return protocol.NewResponse(req.ID, task), nil
 }
 
 // handleTasksUpdate serves tasks/update (MCP 2026-07-28 tasks extension): refresh
 // a non-terminal task's ttl so a slow task is not evicted before it finishes. A
 // null ttl clears the deadline. Unknown/terminal tasks map to -32602.
-func (h *requestHandler) handleTasksUpdate(_ context.Context, req *protocol.Request) (*protocol.Response, error) {
+func (h *requestHandler) handleTasksUpdate(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	var params struct {
 		TaskID string `json:"taskId"`
 		TTL    *int64 `json:"ttl"`
@@ -1947,6 +1977,10 @@ func (h *requestHandler) handleTasksUpdate(_ context.Context, req *protocol.Requ
 	task, err := h.srv.UpdateAugTask(params.TaskID, params.TTL)
 	if err != nil {
 		return nil, protocol.NewInvalidParams(err.Error())
+	}
+	if isModern(ctx) {
+		// SEP-2663: update acknowledges with an empty result.
+		return protocol.NewResponse(req.ID, map[string]any{}), nil
 	}
 	return protocol.NewResponse(req.ID, task), nil
 }
@@ -1976,8 +2010,64 @@ func attachRelatedTask(resp map[string]any, taskID string) {
 	if meta == nil {
 		meta = map[string]any{}
 	}
-	meta[relatedTaskMetaKey] = map[string]any{fieldTaskID: taskID}
+	meta[protocol.MetaKeyRelatedTask] = map[string]any{fieldTaskID: taskID}
 	resp["_meta"] = meta
+}
+
+// modernTaskBase is the 2026-07-28 Task object (flat fields, ttlMs/pollIntervalMs).
+func modernTaskBase(t *server.AugTask) map[string]any {
+	m := map[string]any{
+		fieldTaskID:        t.TaskID,
+		fieldStatus:        string(t.Status),
+		fieldCreatedAt:     t.CreatedAt,
+		fieldLastUpdatedAt: t.LastUpdatedAt,
+		fieldTTLMs:         t.TTL,
+	}
+	if t.StatusMessage != "" {
+		m[fieldStatusMessage] = t.StatusMessage
+	}
+	if t.PollInterval != nil {
+		m[fieldPollIntervalMs] = *t.PollInterval
+	}
+	return m
+}
+
+// modernCreateTaskResult is CreateTaskResult: Result & Task with resultType "task".
+func modernCreateTaskResult(t *server.AugTask) map[string]any {
+	m := modernTaskBase(t)
+	m[fieldResultType] = protocol.ResultTypeTask
+	return m
+}
+
+// modernGetTaskResult is the DetailedTask for tasks/get, inlining the terminal
+// result or JSON-RPC error. resultType is "complete" (the get itself finished).
+func modernGetTaskResult(t *server.AugTask) map[string]any {
+	m := modernTaskBase(t)
+	result, execErr := t.Outcome()
+	switch t.Status {
+	case server.AugTaskCompleted:
+		if result != nil {
+			m[fieldResult] = result
+		}
+	case server.AugTaskFailed:
+		m[fieldError] = jsonRPCErrorMap(execErr)
+	}
+	return m
+}
+
+func jsonRPCErrorMap(err error) map[string]any {
+	if err == nil {
+		return map[string]any{fieldCode: protocol.CodeInternalError, fieldMessage: "task failed"}
+	}
+	var mcpErr *protocol.Error
+	if errors.As(err, &mcpErr) {
+		out := map[string]any{fieldCode: mcpErr.Code, fieldMessage: mcpErr.Message}
+		if mcpErr.Data != nil {
+			out["data"] = mcpErr.Data
+		}
+		return out
+	}
+	return map[string]any{fieldCode: protocol.CodeInternalError, fieldMessage: err.Error()}
 }
 
 // notificationAdapter adapts transport.NotificationSender to server.NotificationSender.

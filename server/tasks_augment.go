@@ -164,7 +164,7 @@ func (r *augTaskRegistry) updateTTL(id string, ttlMs *int64) (*AugTask, error) {
 		t.expireAt = time.Time{}
 	}
 	t.LastUpdatedAt = now.UTC().Format(time.RFC3339)
-	return t, nil
+	return t.snapshot(), nil
 }
 
 // get returns a live (non-expired) task by id.
@@ -179,7 +179,24 @@ func (r *augTaskRegistry) get(id string) (*AugTask, bool) {
 		delete(r.tasks, id)
 		return nil, false
 	}
-	return t, true
+	return t.snapshot(), true
+}
+
+// snapshot copies exported task fields (and the execution outcome) so callers
+// can read a task without racing complete()/cancel. The copy shares the done
+// channel so Await can wait; cancel is not exposed.
+func (t *AugTask) snapshot() *AugTask {
+	c := *t
+	if t.TTL != nil {
+		v := *t.TTL
+		c.TTL = &v
+	}
+	if t.PollInterval != nil {
+		v := *t.PollInterval
+		c.PollInterval = &v
+	}
+	c.cancel = nil
+	return &c
 }
 
 // complete moves a task to a terminal status carrying the underlying result
@@ -220,7 +237,7 @@ func (r *augTaskRegistry) cancelTask(id string) (*AugTask, error) {
 		t.cancel()
 	}
 	close(t.done)
-	return t, nil
+	return t.snapshot(), nil
 }
 
 // list returns tasks sorted newest-first with cursor pagination.
@@ -230,7 +247,7 @@ func (r *augTaskRegistry) list(cursor string, limit int) ([]*AugTask, string) {
 	r.evictExpiredLocked()
 	all := make([]*AugTask, 0, len(r.tasks))
 	for _, t := range r.tasks {
-		all = append(all, t)
+		all = append(all, t.snapshot())
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].CreatedAt > all[j].CreatedAt })
 
@@ -270,6 +287,7 @@ func (s *Server) StartAugmentedCall(ctx context.Context, ttlMs *int64, exec func
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	s.augTasks.mu.Lock()
 	t.cancel = cancel
+	snap := t.snapshot()
 	s.augTasks.mu.Unlock()
 
 	go func() {
@@ -279,27 +297,59 @@ func (s *Server) StartAugmentedCall(ctx context.Context, ttlMs *int64, exec func
 		case execErr != nil:
 			s.augTasks.complete(t.TaskID, AugTaskFailed, nil, execErr, execErr.Error())
 		case isError:
-			s.augTasks.complete(t.TaskID, AugTaskFailed, result, nil, "tool execution error")
+			// isError tool results are a successful CallToolResult, not a
+			// JSON-RPC failure — status completed with the result inlined
+			// (SEP-2663). tasks/result still returns the isError payload.
+			s.augTasks.complete(t.TaskID, AugTaskCompleted, result, nil, "")
 		default:
 			s.augTasks.complete(t.TaskID, AugTaskCompleted, result, nil, "")
 		}
 	}()
-	return t, nil
+	return snap, nil
 }
 
 // GetAugTask returns a task's current state by id (nil, false if unknown/expired).
 func (s *Server) GetAugTask(id string) (*AugTask, bool) { return s.augTasks.get(id) }
 
+// Outcome returns the underlying request result and any protocol-level error
+// recorded when the task reached a terminal status. Both are nil while the
+// task is still running. Used by modern tasks/get to inline completed/failed
+// payloads (SEP-2663).
+func (t *AugTask) Outcome() (result any, execErr error) {
+	if t == nil {
+		return nil, nil
+	}
+	return t.execResult, t.execErr
+}
+
 // AwaitAugTaskResult blocks until the task reaches a terminal status (or ctx is
 // cancelled), then returns its underlying result and protocol error. It returns
 // ErrAugTaskNotFound for an unknown/expired id.
 func (s *Server) AwaitAugTaskResult(ctx context.Context, id string) (result any, execErr error, err error) {
-	t, ok := s.augTasks.get(id)
-	if !ok {
+	return s.augTasks.await(ctx, id)
+}
+
+func (r *augTaskRegistry) await(ctx context.Context, id string) (any, error, error) {
+	r.mu.Lock()
+	t, ok := r.tasks[id]
+	if !ok || r.expiredLocked(t) {
+		if ok {
+			delete(r.tasks, id)
+		}
+		r.mu.Unlock()
 		return nil, nil, ErrAugTaskNotFound
 	}
+	done := t.done
+	r.mu.Unlock()
+
 	select {
-	case <-t.done:
+	case <-done:
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		t, ok := r.tasks[id]
+		if !ok {
+			return nil, nil, ErrAugTaskNotFound
+		}
 		return t.execResult, t.execErr, nil
 	case <-ctx.Done():
 		return nil, nil, ctx.Err()

@@ -30,7 +30,14 @@ There is **no `/v2` Go module path**. Phase 4 shipped on v1 (stateless default i
 | OAuth token enforcement, `iss` validation, DCR, CIMD | **Out of library.** Auth stays advertise-only; enforcement belongs at the gateway. RFC 9728 `/.well-known/oauth-protected-resource` is served when discovery OAuth metadata is configured. |
 | JSON-RPC batching | **Closed — will not implement.** Optional in 2025-03-26, removed in 2025-06-18. Never batching is conformant. |
 | `x-mcp-header` → `Mcp-Param-*` (SEP-2243) | **Optional for servers (MAY).** mcp-go does not emit the annotation, so the HTTP client is not required to mirror headers until a listed tool carries it. Follow-up only if we annotate schemas or consume third-party servers that do. `Mcp-Method` / `Mcp-Name` are already enforced. |
-| Unsolicited task handles (SEP-2663) | **In library, modern path.** A `TaskSupportRequired` tool returns a task handle on a plain `tools/call` (no per-request `task` field). Optional tools still need the client to opt in. Legacy initialize-era callers keep the 2025-11-25 rejection. |
+| Unsolicited task handles (SEP-2663) | **In library, modern path.** A `TaskSupportRequired` tool returns a flat `CreateTaskResult` (`resultType: "task"`) on a plain `tools/call`. The retired `task` field is ignored (optional tools run synchronously). Legacy callers keep the 2025-11-25 nested `{task: …}` opt-in. |
+| `tasks/result` / `notifications/elicitation/complete` | **Gated off for modern** (`-32601`). Clients poll `tasks/get` (inlined `result`/`error`) and retry the original method under MRTR. Legacy keeps both methods. |
+| `tasks/update` `inputResponses` | **Follow-up.** Spec uses `tasks/update` to fulfill in-task `inputRequests`; mcp-go currently refreshes TTL (legacy response is the task; modern is an empty ack). Task-level MRTR is not wired. |
+| `notifications/tasks` | **Optional (MAY).** Clients can poll `tasks/get`. Push notifications are a later addition. |
+| OpenAPI tool descriptors | **Not in library.** Typed Go handlers remain the registration surface. |
+| Roots / Sampling / Logging / HTTP+SSE / `includeContext` thisServer\|allServers | **Deprecated, kept** for the 12-month window. |
+
+Phase 1–3 checkboxes below that are still unmarked were implemented in v1.22–v1.25 (Streamable HTTP, audio, progress `message`, sampling-with-tools, icons, JSON Schema 2020-12, `Implementation.description`, input validation as `isError`). Treat the table above as the live remainder.
 
 ---
 
@@ -224,8 +231,9 @@ no `/v2` module path.
 - [x] Move **Tasks** to the `io.modelcontextprotocol/tasks` extension: polling
   `tasks/get`, new `tasks/update`, **remove `tasks/list`**, allow unsolicited task
   handles. (tasks/update added; tasks/list gated off for modern; extension
-  advertised. On the modern path a `TaskSupportRequired` tool returns a task
-  handle without a per-request `task` field.)
+  advertised. On the modern path a `TaskSupportRequired` tool returns a flat
+  `CreateTaskResult` (`resultType: "task"`) without a per-request `task` field;
+  `tasks/result` is MethodNotFound; `tasks/get` inlines the terminal result.)
 
 **Auth / errors / deprecations**
 - [~] `iss` validation (RFC 9207); `application_type` in DCR; Client ID Metadata

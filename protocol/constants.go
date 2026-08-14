@@ -127,8 +127,9 @@ const (
 	MethodTasksList   = "tasks/list"
 
 	// MethodTasksUpdate refreshes a task's ttl (MCP 2026-07-28 tasks extension).
-	// tasks/list, by contrast, is retired in the modern era (gated off for modern
-	// requests) — the tasks extension favors direct task handles over listing.
+	// tasks/list and tasks/result are retired in the modern era (gated off for
+	// modern requests) — the tasks extension polls via tasks/get instead of
+	// blocking on tasks/result, and favors direct handles over listing.
 	MethodTasksUpdate = "tasks/update"
 
 	// Stateless discovery (MCP 2026-07-28, SEP-2575) — replaces initialize for
@@ -183,6 +184,7 @@ const (
 const (
 	ResultTypeComplete      = "complete"
 	ResultTypeInputRequired = "input_required"
+	ResultTypeTask          = "task" // CreateTaskResult (SEP-2663)
 )
 
 // MCP notification methods.

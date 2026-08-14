@@ -55,8 +55,10 @@ All notable changes to this project will be documented in this file.
 - **RFC 9728 `/.well-known/oauth-protected-resource`** is served (advertise
   only, no token validation) when discovery OAuth metadata is configured.
 - **Unsolicited task handles** on the modern path: a `TaskSupportRequired`
-  tool returns a task from a plain `tools/call` (SEP-2663). Legacy callers
-  still must send `task`.
+  tool returns a flat `CreateTaskResult` (`resultType: "task"`) from a plain
+  `tools/call` (SEP-2663). The retired per-request `task` field is ignored.
+  `tasks/result` and `notifications/elicitation/complete` are `-32601` for
+  modern callers; `tasks/get` inlines the terminal `result`/`error`.
 - **No `/v2` module path.** Phase 4 stays on v1.
 
 ## [1.25.0](https://github.com/klarlabs-studio/mcp-go/compare/v1.24.1...v1.25.0) - 2026-08-14
