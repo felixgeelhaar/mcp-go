@@ -30,7 +30,7 @@ func TestRetiredMethods_GatedOffForModern(t *testing.T) {
 		t.Run("modern/"+method, func(t *testing.T) {
 			req := &protocol.Request{
 				JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: method,
-				Params: modernParams(t, protocol.DraftVersion, nil),
+				Params: modernParams(t, protocol.ModernVersion, nil),
 			}
 			_, err := handler.HandleRequest(context.Background(), req)
 			var mcpErr *protocol.Error

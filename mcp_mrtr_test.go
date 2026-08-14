@@ -15,7 +15,7 @@ import (
 func modernMRTRParams(t *testing.T, caps map[string]any, extra map[string]any) json.RawMessage {
 	t.Helper()
 	meta := map[string]any{
-		protocol.MetaKeyProtocolVersion:    protocol.DraftVersion,
+		protocol.MetaKeyProtocolVersion:    protocol.ModernVersion,
 		protocol.MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
 		protocol.MetaKeyClientCapabilities: caps,
 	}

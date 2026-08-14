@@ -19,7 +19,7 @@ func TestSubscriptionsListen_ReturnsSubscriptionID(t *testing.T) {
 
 	req := &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodSubscriptionsListen,
-		Params: modernParams(t, protocol.DraftVersion, map[string]any{
+		Params: modernParams(t, protocol.ModernVersion, map[string]any{
 			"notifications": []string{protocol.MethodResourceUpdated},
 			"uris":          []string{"email://inbox"},
 		}),

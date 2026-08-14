@@ -713,6 +713,11 @@ func IsURITemplate(uri string) bool {
 	return false
 }
 
+const (
+	iconKeySrc = "src"
+	iconKeyURI = "uri"
+)
+
 // ForProtocol returns a wire-safe icon object for the given protocol
 // revision. 2026-07-28 uses src/sizes/theme; earlier revisions use
 // uri/mimeType/size. Fields are filled from Normalize so an icon authored
@@ -721,7 +726,7 @@ func IsURITemplate(uri string) bool {
 func (i Icon) ForProtocol(version string) any {
 	n := i.Normalize()
 	if protocol.IsModernVersion(version) {
-		out := map[string]any{"src": n.Src}
+		out := map[string]any{iconKeySrc: n.Src}
 		if n.MimeType != "" {
 			out["mimeType"] = n.MimeType
 		}
@@ -733,7 +738,7 @@ func (i Icon) ForProtocol(version string) any {
 		}
 		return out
 	}
-	out := map[string]any{"uri": n.URI}
+	out := map[string]any{iconKeyURI: n.URI}
 	if n.MimeType != "" {
 		out["mimeType"] = n.MimeType
 	}

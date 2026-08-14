@@ -39,7 +39,7 @@ func TestModern_ResultTypeStamped(t *testing.T) {
 
 	req := &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList,
-		Params: modernParams(t, protocol.DraftVersion, nil),
+		Params: modernParams(t, protocol.ModernVersion, nil),
 	}
 	resp, err := handler.HandleRequest(context.Background(), req)
 	if err != nil {
@@ -87,7 +87,7 @@ func TestModern_ParseTraceContext(t *testing.T) {
 	)
 	params := mustParams(t, map[string]any{
 		"_meta": map[string]any{
-			protocol.MetaKeyProtocolVersion:    protocol.DraftVersion,
+			protocol.MetaKeyProtocolVersion:    protocol.ModernVersion,
 			protocol.MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
 			protocol.MetaKeyClientCapabilities: map[string]any{},
 			protocol.MetaKeyTraceparent:        traceparent,
@@ -119,7 +119,7 @@ func TestModern_ApplyTraceContext(t *testing.T) {
 	srv := NewServer(ServerInfo{Name: "s", Version: "1"})
 	h := newRequestHandler(srv)
 	m := &modernMeta{
-		protocolVersion: protocol.DraftVersion,
+		protocolVersion: protocol.ModernVersion,
 		clientInfo:      json.RawMessage(`{"name":"c","version":"1"}`),
 		clientCaps:      json.RawMessage(`{}`),
 		traceparent:     traceparent,
@@ -151,7 +151,7 @@ func TestModern_ApplyNoTraceContext(t *testing.T) {
 	srv := NewServer(ServerInfo{Name: "s", Version: "1"})
 	h := newRequestHandler(srv)
 	m := &modernMeta{
-		protocolVersion: protocol.DraftVersion,
+		protocolVersion: protocol.ModernVersion,
 		clientInfo:      json.RawMessage(`{"name":"c","version":"1"}`),
 		clientCaps:      json.RawMessage(`{}`),
 	}
@@ -174,7 +174,7 @@ func TestModern_MissingRequiredMeta(t *testing.T) {
 
 	// protocolVersion present (marks it modern) but clientInfo/caps omitted.
 	params := mustParams(t, map[string]any{
-		"_meta": map[string]any{protocol.MetaKeyProtocolVersion: protocol.DraftVersion},
+		"_meta": map[string]any{protocol.MetaKeyProtocolVersion: protocol.ModernVersion},
 	})
 	req := &protocol.Request{JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList, Params: params}
 	_, err := handler.HandleRequest(context.Background(), req)
@@ -194,7 +194,7 @@ func TestModern_CacheHintStamped(t *testing.T) {
 	// Modern tools/list → cache hint present.
 	req := &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList,
-		Params: modernParams(t, protocol.DraftVersion, nil),
+		Params: modernParams(t, protocol.ModernVersion, nil),
 	}
 	resp, _ := handler.HandleRequest(context.Background(), req)
 	res := resp.Result.(map[string]any)
@@ -220,7 +220,7 @@ func TestModern_DefaultCacheHint(t *testing.T) {
 
 	req := &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList,
-		Params: modernParams(t, protocol.DraftVersion, nil),
+		Params: modernParams(t, protocol.ModernVersion, nil),
 	}
 	resp, err := handler.HandleRequest(context.Background(), req)
 	if err != nil {
@@ -244,7 +244,7 @@ func TestModern_ServerInfoMeta(t *testing.T) {
 
 	req := &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsList,
-		Params: modernParams(t, protocol.DraftVersion, nil),
+		Params: modernParams(t, protocol.ModernVersion, nil),
 	}
 	resp, err := handler.HandleRequest(context.Background(), req)
 	if err != nil {
@@ -265,7 +265,7 @@ func TestModern_ResourceNotFoundRenumbered(t *testing.T) {
 
 	modReq := &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodResourcesRead,
-		Params: modernParams(t, protocol.DraftVersion, map[string]any{"uri": "missing://x"}),
+		Params: modernParams(t, protocol.ModernVersion, map[string]any{"uri": "missing://x"}),
 	}
 	_, err := handler.HandleRequest(context.Background(), modReq)
 	var mcpErr *protocol.Error

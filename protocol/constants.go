@@ -20,14 +20,22 @@ const ModernVersion = "2026-07-28"
 // Deprecated: 2026-07-28 is the published spec, not a draft. Use ModernVersion.
 const DraftVersion = ModernVersion
 
+// Named initialize-era revisions, used in InitializeVersions/SupportedVersions
+// so the date strings are not duplicated (goconst).
+const (
+	version20241105 = "2024-11-05"
+	version20250326 = "2025-03-26"
+	version20250618 = "2025-06-18"
+)
+
 // InitializeVersions lists protocol revisions the legacy initialize handshake
 // can speak, ordered oldest→newest. 2026-07-28 is omitted because that
 // revision retires initialize.
 var InitializeVersions = []string{
-	"2024-11-05",
-	"2025-03-26",
-	"2025-06-18",
-	"2025-11-25",
+	version20241105,
+	version20250326,
+	version20250618,
+	MCPVersion,
 }
 
 // SupportedVersions lists every MCP protocol revision this library can speak,
@@ -38,11 +46,11 @@ var InitializeVersions = []string{
 // revision and was removed again in 2025-06-18; this library never batches,
 // which is conformant (batching support was never required).
 var SupportedVersions = []string{
-	"2024-11-05",
-	"2025-03-26",
-	"2025-06-18",
-	"2025-11-25",
-	"2026-07-28",
+	version20241105,
+	version20250326,
+	version20250618,
+	MCPVersion,
+	ModernVersion,
 }
 
 // HeaderProtocolVersion is the Streamable HTTP header carrying the MCP
@@ -62,7 +70,7 @@ const (
 // RequiresProtocolVersionHeader reports whether HTTP requests at protocol
 // version v must carry MCP-Protocol-Version (true for 2025-06-18 and later).
 func RequiresProtocolVersionHeader(v string) bool {
-	return v >= "2025-06-18"
+	return v >= version20250618
 }
 
 // IsSupportedVersion reports whether v is a protocol version this library

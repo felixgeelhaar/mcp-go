@@ -8,8 +8,8 @@ func TestNegotiateVersion_InitializeEra(t *testing.T) {
 		want      string
 	}{
 		{"", MCPVersion},
-		{"2024-11-05", "2024-11-05"},
-		{"2025-11-25", "2025-11-25"},
+		{version20241105, version20241105},
+		{MCPVersion, MCPVersion},
 		{"2030-01-01", MCPVersion},
 		// 2026-07-28 retires initialize: echo the newest initialize-era version.
 		{ModernVersion, MCPVersion},
@@ -31,16 +31,17 @@ func TestSupportedVersions_IncludesModern(t *testing.T) {
 	if !IsModernVersion(ModernVersion) {
 		t.Fatal("IsModernVersion(ModernVersion) = false")
 	}
-	if DraftVersion != ModernVersion {
-		t.Fatalf("DraftVersion alias = %q, want %q", DraftVersion, ModernVersion)
+	alias := DraftVersion //nolint:staticcheck // pin the deprecated alias
+	if alias != ModernVersion {
+		t.Fatalf("deprecated alias = %q, want %q", alias, ModernVersion)
 	}
 }
 
 func TestRequiresProtocolVersionHeader(t *testing.T) {
-	if RequiresProtocolVersionHeader("2025-03-26") {
+	if RequiresProtocolVersionHeader(version20250326) {
 		t.Error("2025-03-26 must not require MCP-Protocol-Version")
 	}
-	if !RequiresProtocolVersionHeader("2025-06-18") {
+	if !RequiresProtocolVersionHeader(version20250618) {
 		t.Error("2025-06-18 must require MCP-Protocol-Version")
 	}
 	if !RequiresProtocolVersionHeader(ModernVersion) {

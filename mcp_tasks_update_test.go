@@ -85,7 +85,7 @@ func TestTasksList_GatedOffForModern(t *testing.T) {
 	// Modern tasks/list → MethodNotFound.
 	modern := &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`10`), Method: protocol.MethodTasksList,
-		Params: modernParams(t, protocol.DraftVersion, nil),
+		Params: modernParams(t, protocol.ModernVersion, nil),
 	}
 	_, err := handler.HandleRequest(context.Background(), modern)
 	var mcpErr *protocol.Error
