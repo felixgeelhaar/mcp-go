@@ -140,3 +140,17 @@ func NewMissingRequiredClientCapability(required ...string) *Error {
 		Data:    map[string]any{"requiredCapabilities": required},
 	}
 }
+
+// NewMissingRequiredExtension creates a -32021 error naming an extensions
+// capability the client did not declare (MCP 2026-07-28).
+func NewMissingRequiredExtension(id string) *Error {
+	return &Error{
+		Code:    CodeMissingRequiredClientCapability,
+		Message: "Missing required client capability",
+		Data: map[string]any{
+			"requiredCapabilities": map[string]any{
+				"extensions": map[string]any{id: map[string]any{}},
+			},
+		},
+	}
+}

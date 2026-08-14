@@ -46,6 +46,10 @@ type Session struct {
 	// the stateless MRTR model (MCP 2026-07-28) when set — the request-scoped
 	// replacement for a RequestSender. Nil under legacy session semantics.
 	broker *InputBroker
+
+	// extensions is the reverse-DNS extension map the client declared
+	// (capabilities.extensions). Presence of a key means the client supports it.
+	extensions map[string]struct{}
 }
 
 // ErrNoRequestSender is returned by server→client request methods (sampling,
@@ -209,8 +213,9 @@ func (s *Session) SetClientCapabilitiesJSON(raw json.RawMessage) {
 		Elicitation *struct {
 			URL *json.RawMessage `json:"url"`
 		} `json:"elicitation"`
-		Channels *json.RawMessage `json:"channels"`
-		Roots    *struct {
+		Channels   *json.RawMessage           `json:"channels"`
+		Extensions map[string]json.RawMessage `json:"extensions"`
+		Roots      *struct {
 			ListChanged bool `json:"listChanged"`
 		} `json:"roots"`
 	}
@@ -228,7 +233,23 @@ func (s *Session) SetClientCapabilitiesJSON(raw json.RawMessage) {
 	if wire.Roots != nil {
 		caps.Roots = &RootsCapability{ListChanged: wire.Roots.ListChanged}
 	}
-	s.SetClientCapabilities(caps)
+	ext := make(map[string]struct{}, len(wire.Extensions))
+	for id := range wire.Extensions {
+		ext[id] = struct{}{}
+	}
+	s.mu.Lock()
+	s.clientCaps = caps
+	s.extensions = ext
+	s.mu.Unlock()
+}
+
+// HasExtension reports whether the client declared the given reverse-DNS
+// extension in capabilities.extensions.
+func (s *Session) HasExtension(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.extensions[id]
+	return ok
 }
 
 // SetInputBroker attaches an MRTR input broker (MCP 2026-07-28) so this

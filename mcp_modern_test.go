@@ -30,6 +30,26 @@ func modernParams(t *testing.T, version string, extra map[string]any) json.RawMe
 	return mustParams(t, p)
 }
 
+func modernTaskCaps() map[string]any {
+	return map[string]any{
+		"extensions":  map[string]any{protocol.ExtensionTasks: map[string]any{}},
+		"elicitation": map[string]any{},
+		"sampling":    map[string]any{},
+	}
+}
+
+func modernTaskParams(t *testing.T, extra map[string]any) json.RawMessage {
+	t.Helper()
+	meta := map[string]any{
+		protocol.MetaKeyProtocolVersion:    protocol.ModernVersion,
+		protocol.MetaKeyClientInfo:         map[string]any{"name": "c", "version": "1"},
+		protocol.MetaKeyClientCapabilities: modernTaskCaps(),
+	}
+	p := map[string]any{"_meta": meta}
+	maps.Copy(p, extra)
+	return mustParams(t, p)
+}
+
 // TestModern_ResultTypeStamped verifies that a modern request (carrying the
 // per-request _meta) gets resultType:"complete" stamped on its result.
 func TestModern_ResultTypeStamped(t *testing.T) {

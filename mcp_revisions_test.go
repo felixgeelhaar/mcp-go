@@ -280,7 +280,8 @@ func TestSession_SetClientCapabilitiesJSON(t *testing.T) {
 	sess.SetClientCapabilitiesJSON(json.RawMessage(`{
 		"sampling": {},
 		"elicitation": {},
-		"roots": {"listChanged": true}
+		"roots": {"listChanged": true},
+		"extensions": {"io.modelcontextprotocol/tasks": {}}
 	}`))
 	caps := sess.ClientCapabilities()
 	if !caps.Sampling {
@@ -291,5 +292,8 @@ func TestSession_SetClientCapabilitiesJSON(t *testing.T) {
 	}
 	if caps.Roots == nil || !caps.Roots.ListChanged {
 		t.Errorf("expected Roots.ListChanged=true, got %+v", caps.Roots)
+	}
+	if !sess.HasExtension(protocol.ExtensionTasks) {
+		t.Error("expected tasks extension")
 	}
 }

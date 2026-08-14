@@ -202,6 +202,7 @@ type Server struct {
 	tasks        *TaskManager
 	augTasks     *augTaskRegistry
 	resourceSubs *resourceSubscriptions
+	taskSubs     *taskSubscriptions
 	resultCache  *resultCacheConfig
 
 	// regErrs accumulates registration collisions. The fluent builder API
@@ -219,6 +220,7 @@ func New(info Info, opts ...Option) *Server {
 		resources:    make(map[string]*Resource),
 		prompts:      make(map[string]*Prompt),
 		resourceSubs: newResourceSubscriptions(),
+		taskSubs:     newTaskSubscriptions(),
 		augTasks:     newAugTaskRegistry(),
 	}
 
@@ -240,6 +242,7 @@ func (s *Server) ResourceSubscriptionsEnabled() bool {
 // Transports with server push (HTTP+SSE) call this during Serve.
 func (s *Server) SetResourceNotifier(n ResourceNotifier) {
 	s.resourceSubs.setNotifier(n)
+	s.taskSubs.setNotifier(n)
 }
 
 // SubscribeResource records that a client is interested in a resource URI.
@@ -256,6 +259,7 @@ func (s *Server) UnsubscribeResource(clientID, uri string) {
 // when the client's connection closes.
 func (s *Server) RemoveClientSubscriptions(clientID string) {
 	s.resourceSubs.removeClient(clientID)
+	s.taskSubs.removeClient(clientID)
 }
 
 // NotifyResourceUpdated pushes a notifications/resources/updated to every
@@ -263,6 +267,12 @@ func (s *Server) RemoveClientSubscriptions(clientID string) {
 // watcher). A no-op when no notifier is wired.
 func (s *Server) NotifyResourceUpdated(uri string) error {
 	return s.resourceSubs.notifyUpdated(uri)
+}
+
+// SubscribeTask records that a subscriptions/listen stream wants
+// notifications/tasks for taskID.
+func (s *Server) SubscribeTask(subscriptionID, taskID string) {
+	s.taskSubs.subscribe(subscriptionID, taskID)
 }
 
 // WithInstructions sets the server instructions that provide context to AI models

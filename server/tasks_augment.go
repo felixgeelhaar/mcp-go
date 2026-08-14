@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"sort"
 	"sync"
 	"time"
+
+	"go.klarlabs.de/mcp/protocol"
 )
 
 // Sentinel errors from the augmented-task registry, mapped to JSON-RPC
@@ -44,6 +47,11 @@ func (s AugTaskStatus) terminal() bool {
 	return s == AugTaskCompleted || s == AugTaskFailed || s == AugTaskCancelled
 }
 
+const (
+	jsonKeyCode    = "code"
+	jsonKeyMessage = "message"
+)
+
 // TaskSupport declares whether a tool may (or must) be invoked as a task, as
 // advertised via a tool's `execution.taskSupport` in tools/list.
 type TaskSupport string
@@ -74,6 +82,14 @@ type AugTask struct {
 	cancel     context.CancelFunc
 	ttlDur     time.Duration
 	expireAt   time.Time
+
+	// Task-level MRTR (SEP-2663): replay the handler after tasks/update supplies
+	// inputResponses. pending is the outstanding inputRequests while status is
+	// input_required; responses accumulate over the task lifetime.
+	exec      func(context.Context) (any, bool, error)
+	runCtx    context.Context
+	pending   []InputRequest
+	responses []InputResponse
 }
 
 // augTaskRegistry is a bounded, TTL-evicting store of task-augmented requests.
@@ -137,37 +153,6 @@ func (r *augTaskRegistry) create(ttlMs *int64) (*AugTask, error) {
 	return t, nil
 }
 
-// updateTTL refreshes a non-terminal task's ttl (and expiry), returning the
-// updated task. A nil ttl clears the deadline (unlimited). It returns
-// ErrAugTaskNotFound for an unknown/expired id and ErrAugTaskTerminal for a task
-// that has already finished (its ttl can no longer be meaningfully extended).
-func (r *augTaskRegistry) updateTTL(id string, ttlMs *int64) (*AugTask, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	t, ok := r.tasks[id]
-	if !ok || r.expiredLocked(t) {
-		if ok {
-			delete(r.tasks, id)
-		}
-		return nil, ErrAugTaskNotFound
-	}
-	if t.Status.terminal() {
-		return nil, ErrAugTaskTerminal
-	}
-	now := r.now()
-	t.TTL = ttlMs
-	if ttlMs != nil {
-		t.ttlDur = time.Duration(*ttlMs) * time.Millisecond
-		t.expireAt = now.Add(t.ttlDur)
-	} else {
-		t.ttlDur = 0
-		t.expireAt = time.Time{}
-	}
-	t.LastUpdatedAt = now.UTC().Format(time.RFC3339)
-	return t.snapshot(), nil
-}
-
-// get returns a live (non-expired) task by id.
 func (r *augTaskRegistry) get(id string) (*AugTask, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -196,6 +181,14 @@ func (t *AugTask) snapshot() *AugTask {
 		c.PollInterval = &v
 	}
 	c.cancel = nil
+	c.exec = nil
+	c.runCtx = nil
+	if t.pending != nil {
+		c.pending = append([]InputRequest(nil), t.pending...)
+	}
+	if t.responses != nil {
+		c.responses = append([]InputResponse(nil), t.responses...)
+	}
 	return &c
 }
 
@@ -278,34 +271,82 @@ func (r *augTaskRegistry) list(cursor string, limit int) ([]*AugTask, string) {
 // underlying result (e.g. a CallToolResult map), whether that result represents
 // a tool execution error (isError), and any protocol-level error. The returned
 // AugTask is the CreateTaskResult payload sent to the requestor immediately.
+// If exec returns ErrInputRequired, the task pauses at input_required until
+// ApplyAugTaskInput supplies matching inputResponses and replays exec.
 func (s *Server) StartAugmentedCall(ctx context.Context, ttlMs *int64, exec func(context.Context) (result any, isError bool, err error)) (*AugTask, error) {
 	t, err := s.augTasks.create(ttlMs)
 	if err != nil {
 		return nil, err
 	}
-	// A cancellable context so tasks/cancel can stop the background work.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	s.augTasks.mu.Lock()
 	t.cancel = cancel
+	t.exec = exec
+	t.runCtx = runCtx
 	snap := t.snapshot()
 	s.augTasks.mu.Unlock()
 
-	go func() {
-		defer cancel()
-		result, isError, execErr := exec(runCtx)
-		switch {
-		case execErr != nil:
-			s.augTasks.complete(t.TaskID, AugTaskFailed, nil, execErr, execErr.Error())
-		case isError:
-			// isError tool results are a successful CallToolResult, not a
-			// JSON-RPC failure — status completed with the result inlined
-			// (SEP-2663). tasks/result still returns the isError payload.
-			s.augTasks.complete(t.TaskID, AugTaskCompleted, result, nil, "")
-		default:
-			s.augTasks.complete(t.TaskID, AugTaskCompleted, result, nil, "")
-		}
-	}()
+	go s.runAugmented(t.TaskID)
 	return snap, nil
+}
+
+func (s *Server) runAugmented(id string) {
+	s.augTasks.mu.Lock()
+	t, ok := s.augTasks.tasks[id]
+	if !ok || t.Status.terminal() {
+		s.augTasks.mu.Unlock()
+		return
+	}
+	exec := t.exec
+	runCtx := t.runCtx
+	responses := append([]InputResponse(nil), t.responses...)
+	s.augTasks.mu.Unlock()
+	if exec == nil || runCtx == nil {
+		s.augTasks.complete(id, AugTaskFailed, nil, errors.New("task has no executor"), "task has no executor")
+		s.taskSubs.notify(s.mustGet(id))
+		return
+	}
+
+	if sess := SessionFromContext(runCtx); sess != nil {
+		sess.SetInputBroker(NewInputBroker(responses, nil))
+	}
+
+	result, isError, execErr := exec(runCtx)
+	if errors.Is(execErr, ErrInputRequired) {
+		var pending []InputRequest
+		if sess := SessionFromContext(runCtx); sess != nil {
+			pending = sess.InputBroker().Pending()
+		}
+		s.augTasks.pause(id, pending)
+		s.taskSubs.notify(s.mustGet(id))
+		return
+	}
+	switch {
+	case execErr != nil:
+		s.augTasks.complete(id, AugTaskFailed, nil, execErr, execErr.Error())
+	case isError:
+		s.augTasks.complete(id, AugTaskCompleted, result, nil, "")
+	default:
+		s.augTasks.complete(id, AugTaskCompleted, result, nil, "")
+	}
+	s.taskSubs.notify(s.mustGet(id))
+}
+
+func (s *Server) mustGet(id string) *AugTask {
+	t, _ := s.augTasks.get(id)
+	return t
+}
+
+func (r *augTaskRegistry) pause(id string, pending []InputRequest) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.tasks[id]
+	if !ok || t.Status.terminal() {
+		return
+	}
+	t.Status = AugTaskInputRequired
+	t.pending = pending
+	t.LastUpdatedAt = r.now().UTC().Format(time.RFC3339)
 }
 
 // GetAugTask returns a task's current state by id (nil, false if unknown/expired).
@@ -320,6 +361,14 @@ func (t *AugTask) Outcome() (result any, execErr error) {
 		return nil, nil
 	}
 	return t.execResult, t.execErr
+}
+
+// Pending returns outstanding inputRequests while the task is input_required.
+func (t *AugTask) Pending() []InputRequest {
+	if t == nil {
+		return nil
+	}
+	return t.pending
 }
 
 // AwaitAugTaskResult blocks until the task reaches a terminal status (or ctx is
@@ -358,15 +407,162 @@ func (r *augTaskRegistry) await(ctx context.Context, id string) (any, error, err
 
 // CancelAugTask cancels a task (ErrAugTaskNotFound / ErrAugTaskTerminal on
 // failure), returning the updated task.
-func (s *Server) CancelAugTask(id string) (*AugTask, error) { return s.augTasks.cancelTask(id) }
+func (s *Server) CancelAugTask(id string) (*AugTask, error) {
+	t, err := s.augTasks.cancelTask(id)
+	if err == nil {
+		s.taskSubs.notify(t)
+	}
+	return t, err
+}
 
-// UpdateAugTask refreshes a non-terminal task's ttl (nil clears the deadline),
-// returning the updated task. It backs the tasks/update method (MCP 2026-07-28):
-// a caller polling a long-running task can extend its lifetime so it is not
-// evicted before completion. Errors: ErrAugTaskNotFound (unknown/expired),
-// ErrAugTaskTerminal (already finished).
+// UpdateAugTask refreshes a non-terminal task's ttl. A nil ttl leaves the
+// existing deadline unchanged. Errors: ErrAugTaskNotFound, ErrAugTaskTerminal.
 func (s *Server) UpdateAugTask(id string, ttlMs *int64) (*AugTask, error) {
-	return s.augTasks.updateTTL(id, ttlMs)
+	t, _, err := s.augTasks.applyInput(id, nil, ttlMs)
+	return t, err
+}
+
+// ApplyAugTaskInput records inputResponses from tasks/update (SEP-2663). Unknown
+// or already-satisfied keys are ignored. When the task is input_required and at
+// least one outstanding request is fulfilled, the handler is replayed.
+func (s *Server) ApplyAugTaskInput(id string, responses []InputResponse, ttlMs *int64) (*AugTask, error) {
+	t, resume, err := s.augTasks.applyInput(id, responses, ttlMs)
+	if err != nil {
+		return nil, err
+	}
+	if resume {
+		go s.runAugmented(id)
+	}
+	s.taskSubs.notify(s.mustGet(id))
+	return t, nil
+}
+
+func (r *augTaskRegistry) applyInput(id string, incoming []InputResponse, ttlMs *int64) (*AugTask, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.tasks[id]
+	if !ok || r.expiredLocked(t) {
+		if ok {
+			delete(r.tasks, id)
+		}
+		return nil, false, ErrAugTaskNotFound
+	}
+	if t.Status.terminal() {
+		return nil, false, ErrAugTaskTerminal
+	}
+	outstanding := make(map[string]struct{}, len(t.pending))
+	for _, p := range t.pending {
+		outstanding[p.ID] = struct{}{}
+	}
+	have := make(map[string]struct{}, len(t.responses))
+	for _, resp := range t.responses {
+		have[resp.ID] = struct{}{}
+	}
+	accepted := 0
+	for _, in := range incoming {
+		if in.ID == "" {
+			continue
+		}
+		if _, ok := outstanding[in.ID]; !ok {
+			continue
+		}
+		if _, ok := have[in.ID]; ok {
+			continue
+		}
+		t.responses = append(t.responses, in)
+		have[in.ID] = struct{}{}
+		accepted++
+	}
+	if ttlMs != nil {
+		now := r.now()
+		t.TTL = ttlMs
+		t.ttlDur = time.Duration(*ttlMs) * time.Millisecond
+		t.expireAt = now.Add(t.ttlDur)
+		t.LastUpdatedAt = now.UTC().Format(time.RFC3339)
+	}
+	resume := t.Status == AugTaskInputRequired && accepted > 0
+	if resume {
+		t.Status = AugTaskWorking
+		t.pending = nil
+		t.LastUpdatedAt = r.now().UTC().Format(time.RFC3339)
+	}
+	return t.snapshot(), resume, nil
+}
+
+// TaskNotificationParams is the 2026-07-28 DetailedTask object used by
+// tasks/get and notifications/tasks (resultType "complete").
+func TaskNotificationParams(t *AugTask) map[string]any {
+	if t == nil {
+		return map[string]any{}
+	}
+	m := map[string]any{
+		"taskId":        t.TaskID,
+		"status":        string(t.Status),
+		"createdAt":     t.CreatedAt,
+		"lastUpdatedAt": t.LastUpdatedAt,
+		"ttlMs":         t.TTL,
+		"resultType":    protocol.ResultTypeComplete,
+	}
+	if t.StatusMessage != "" {
+		m["statusMessage"] = t.StatusMessage
+	}
+	if t.PollInterval != nil {
+		m["pollIntervalMs"] = *t.PollInterval
+	}
+	switch t.Status {
+	case AugTaskInputRequired:
+		m["inputRequests"] = inputRequestsWire(t.pending)
+	case AugTaskCompleted:
+		if t.execResult != nil {
+			m["result"] = t.execResult
+		}
+	case AugTaskFailed:
+		m["error"] = taskErrorWire(t.execErr)
+	}
+	return m
+}
+
+func inputRequestsWire(reqs []InputRequest) map[string]any {
+	out := make(map[string]any, len(reqs))
+	for _, r := range reqs {
+		entry := map[string]any{"method": inputKindMethod(r.Kind)}
+		if len(r.Payload) > 0 {
+			var params any
+			if err := json.Unmarshal(r.Payload, &params); err == nil {
+				entry["params"] = params
+			}
+		}
+		out[r.ID] = entry
+	}
+	return out
+}
+
+func inputKindMethod(kind string) string {
+	switch kind {
+	case InputKindSampling:
+		return protocol.MethodSamplingCreateMessage
+	case InputKindElicitation:
+		return protocol.MethodElicitationCreate
+	case InputKindRoots:
+		return protocol.MethodRootsList
+	default:
+		return kind
+	}
+}
+
+func taskErrorWire(err error) map[string]any {
+	if err == nil {
+		return map[string]any{jsonKeyCode: protocol.CodeInternalError, jsonKeyMessage: "task failed"}
+	}
+	var mcpErr *protocol.Error
+	if errors.As(err, &mcpErr) {
+		out := map[string]any{jsonKeyCode: mcpErr.Code, jsonKeyMessage: mcpErr.Message}
+		if mcpErr.Data != nil {
+			out["data"] = mcpErr.Data
+		}
+		return out
+	}
+	return map[string]any{jsonKeyCode: protocol.CodeInternalError, jsonKeyMessage: err.Error()}
 }
 
 // ListAugTasks returns tasks newest-first with cursor pagination.

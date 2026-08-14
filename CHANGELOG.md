@@ -56,9 +56,17 @@ All notable changes to this project will be documented in this file.
   only, no token validation) when discovery OAuth metadata is configured.
 - **Unsolicited task handles** on the modern path: a `TaskSupportRequired`
   tool returns a flat `CreateTaskResult` (`resultType: "task"`) from a plain
-  `tools/call` (SEP-2663). The retired per-request `task` field is ignored.
-  `tasks/result` and `notifications/elicitation/complete` are `-32601` for
-  modern callers; `tasks/get` inlines the terminal `result`/`error`.
+  `tools/call` (SEP-2663) when the client declares `io.modelcontextprotocol/tasks`.
+  The retired per-request `task` field is ignored. Missing the extension is
+  `-32021`. `tasks/result` and `notifications/elicitation/complete` are `-32601`
+  for modern callers; `tasks/get` inlines the terminal `result`/`error`.
+- **Task-level MRTR.** A background task that needs elicitation, sampling, or
+  roots pauses at `input_required` with a keyed `inputRequests` map.
+  `tasks/update` accepts `inputResponses` (map or array), ignores unknown keys,
+  and replays the handler. `ttl` / `ttlMs` still refresh the deadline.
+- **`notifications/tasks`.** `subscriptions/listen` accepts
+  `notifications.taskIds` (tasks extension required). Status changes are
+  pushed to those streams with the same DetailedTask as `tasks/get`.
 - **No `/v2` module path.** Phase 4 stays on v1.
 
 ## [1.25.0](https://github.com/klarlabs-studio/mcp-go/compare/v1.24.1...v1.25.0) - 2026-08-14

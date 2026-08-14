@@ -184,7 +184,7 @@ func TestTaskAugmentation_UnsolicitedRequiredModern(t *testing.T) {
 
 	resp, err := handler.HandleRequest(context.Background(), &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsCall,
-		Params: modernParams(t, protocol.ModernVersion, map[string]any{
+		Params: modernTaskParams(t, map[string]any{
 			"name": "must", "arguments": map[string]any{"x": "y"},
 		}),
 	})
@@ -230,7 +230,7 @@ func TestModern_TasksGetInlinesCompletedResult(t *testing.T) {
 
 	resp, err := handler.HandleRequest(context.Background(), &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`1`), Method: protocol.MethodToolsCall,
-		Params: modernParams(t, protocol.ModernVersion, map[string]any{
+		Params: modernTaskParams(t, map[string]any{
 			"name": "slow", "arguments": map[string]any{},
 		}),
 	})
@@ -249,7 +249,7 @@ func TestModern_TasksGetInlinesCompletedResult(t *testing.T) {
 	for time.Now().Before(deadline) {
 		getResp, getErr := handler.HandleRequest(context.Background(), &protocol.Request{
 			JSONRPC: "2.0", ID: json.RawMessage(`2`), Method: protocol.MethodTasksGet,
-			Params: modernParams(t, protocol.ModernVersion, map[string]any{fieldTaskID: id}),
+			Params: modernTaskParams(t, map[string]any{fieldTaskID: id}),
 		})
 		if getErr != nil {
 			t.Fatalf("tasks/get: %v", getErr)
@@ -304,7 +304,7 @@ func TestModern_TasksUpdateEmptyAck(t *testing.T) {
 
 	resp, err := handler.HandleRequest(context.Background(), &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`3`), Method: protocol.MethodTasksUpdate,
-		Params: modernParams(t, protocol.ModernVersion, map[string]any{fieldTaskID: id, "ttl": int64(120000)}),
+		Params: modernTaskParams(t, map[string]any{fieldTaskID: id, "ttl": int64(120000)}),
 	})
 	if err != nil {
 		t.Fatalf("tasks/update: %v", err)
@@ -324,7 +324,7 @@ func TestModern_TasksCancelEmptyAck(t *testing.T) {
 
 	resp, err := handler.HandleRequest(context.Background(), &protocol.Request{
 		JSONRPC: "2.0", ID: json.RawMessage(`4`), Method: protocol.MethodTasksCancel,
-		Params: modernParams(t, protocol.ModernVersion, map[string]any{fieldTaskID: id}),
+		Params: modernTaskParams(t, map[string]any{fieldTaskID: id}),
 	})
 	if err != nil {
 		t.Fatalf("tasks/cancel: %v", err)

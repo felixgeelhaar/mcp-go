@@ -126,10 +126,10 @@ const (
 	MethodTasksCancel = "tasks/cancel"
 	MethodTasksList   = "tasks/list"
 
-	// MethodTasksUpdate refreshes a task's ttl (MCP 2026-07-28 tasks extension).
-	// tasks/list and tasks/result are retired in the modern era (gated off for
-	// modern requests) — the tasks extension polls via tasks/get instead of
-	// blocking on tasks/result, and favors direct handles over listing.
+	// MethodTasksUpdate fulfills in-task inputRequests (MCP 2026-07-28 tasks
+	// extension) and may refresh ttl. tasks/list and tasks/result are retired
+	// on the modern path — clients poll tasks/get instead of blocking on
+	// tasks/result, and the extension favors direct handles over listing.
 	MethodTasksUpdate = "tasks/update"
 
 	// Stateless discovery (MCP 2026-07-28, SEP-2575) — replaces initialize for
@@ -199,6 +199,7 @@ const (
 	MethodRootsListChanged    = "notifications/roots/list_changed"
 	MethodChannelMessage      = "notifications/channel/message"
 	MethodElicitationComplete = "notifications/elicitation/complete"
+	MethodTasks               = "notifications/tasks"
 )
 
 // Client feature methods (server requests these from client).

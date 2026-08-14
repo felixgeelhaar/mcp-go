@@ -28,6 +28,7 @@
 package mcp
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/tls"
@@ -70,6 +71,8 @@ const (
 	fieldResultType      = "resultType"
 	fieldCode            = "code"
 	fieldMessage         = "message"
+	fieldInputRequests   = "inputRequests"
+	fieldInputResponses  = "inputResponses"
 )
 
 // Re-export core types for convenience
@@ -1240,11 +1243,22 @@ func reconcileTaskSupport(mode server.TaskSupport, augmented bool, name string) 
 func resolveTaskAugmentation(ctx context.Context, mode server.TaskSupport, name string, hasTaskField bool) (bool, error) {
 	if isModern(ctx) {
 		if mode == server.TaskSupportRequired {
+			if err := requireTasksExtension(ctx); err != nil {
+				return false, err
+			}
 			return true, nil
 		}
 		return false, nil
 	}
 	return hasTaskField, reconcileTaskSupport(mode, hasTaskField, name)
+}
+
+func requireTasksExtension(ctx context.Context) error {
+	sess := server.SessionFromContext(ctx)
+	if sess != nil && sess.HasExtension(protocol.ExtensionTasks) {
+		return nil
+	}
+	return protocol.NewMissingRequiredExtension(protocol.ExtensionTasks)
 }
 
 // startAugmentedToolCall runs a tools/call as a background task and returns the
@@ -1620,8 +1634,9 @@ func (h *requestHandler) handleSubscriptionsListen(ctx context.Context, req *pro
 	}
 
 	var params struct {
-		Notifications []string `json:"notifications"`
-		URIs          []string `json:"uris"`
+		Notifications json.RawMessage `json:"notifications"`
+		URIs          []string        `json:"uris"`
+		TaskIDs       []string        `json:"taskIds"`
 	}
 	if len(req.Params) > 0 {
 		if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -1638,11 +1653,35 @@ func (h *requestHandler) handleSubscriptionsListen(ctx context.Context, req *pro
 		session.Subscribe(uri)
 	}
 
+	taskIDs := append([]string(nil), params.TaskIDs...)
+	taskIDs = append(taskIDs, parseListenTaskIDs(params.Notifications)...)
+	if len(taskIDs) > 0 {
+		if err := requireTasksExtension(ctx); err != nil {
+			return nil, err
+		}
+	}
+
 	id, err := newSubscriptionID()
 	if err != nil {
 		return nil, err
 	}
+	for _, taskID := range taskIDs {
+		h.srv.SubscribeTask(id, taskID)
+	}
 	return protocol.NewResponse(req.ID, map[string]any{"subscriptionId": id}), nil
+}
+
+func parseListenTaskIDs(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var obj struct {
+		TaskIDs []string `json:"taskIds"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	return obj.TaskIDs
 }
 
 func (h *requestHandler) handlePromptsList(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
@@ -1899,8 +1938,11 @@ func (h *requestHandler) handleTasksGet(ctx context.Context, req *protocol.Reque
 	if !ok {
 		return nil, protocol.NewInvalidParams("task not found: " + params.TaskID)
 	}
+	if err := requireTasksIfModern(ctx); err != nil {
+		return nil, err
+	}
 	if isModern(ctx) {
-		return protocol.NewResponse(req.ID, modernGetTaskResult(task)), nil
+		return protocol.NewResponse(req.ID, server.TaskNotificationParams(task)), nil
 	}
 	return protocol.NewResponse(req.ID, task), nil
 }
@@ -1951,6 +1993,9 @@ func (h *requestHandler) handleTasksCancel(ctx context.Context, req *protocol.Re
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return nil, protocol.NewInvalidParams(err.Error())
 	}
+	if err := requireTasksIfModern(ctx); err != nil {
+		return nil, err
+	}
 	task, err := h.srv.CancelAugTask(params.TaskID)
 	if err != nil {
 		// Both unknown-task and already-terminal map to -32602 per spec.
@@ -1968,21 +2013,63 @@ func (h *requestHandler) handleTasksCancel(ctx context.Context, req *protocol.Re
 // null ttl clears the deadline. Unknown/terminal tasks map to -32602.
 func (h *requestHandler) handleTasksUpdate(ctx context.Context, req *protocol.Request) (*protocol.Response, error) {
 	var params struct {
-		TaskID string `json:"taskId"`
-		TTL    *int64 `json:"ttl"`
+		TaskID         string          `json:"taskId"`
+		TTL            *int64          `json:"ttl"`
+		TTLMs          *int64          `json:"ttlMs"`
+		InputResponses json.RawMessage `json:"inputResponses"`
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return nil, protocol.NewInvalidParams(err.Error())
 	}
-	task, err := h.srv.UpdateAugTask(params.TaskID, params.TTL)
+	if err := requireTasksIfModern(ctx); err != nil {
+		return nil, err
+	}
+	responses, err := parseTaskInputResponses(params.InputResponses)
+	if err != nil {
+		return nil, protocol.NewInvalidParams(err.Error())
+	}
+	ttl := params.TTLMs
+	if ttl == nil {
+		ttl = params.TTL
+	}
+	task, err := h.srv.ApplyAugTaskInput(params.TaskID, responses, ttl)
 	if err != nil {
 		return nil, protocol.NewInvalidParams(err.Error())
 	}
 	if isModern(ctx) {
-		// SEP-2663: update acknowledges with an empty result.
 		return protocol.NewResponse(req.ID, map[string]any{}), nil
 	}
 	return protocol.NewResponse(req.ID, task), nil
+}
+
+func requireTasksIfModern(ctx context.Context) error {
+	if !isModern(ctx) {
+		return nil
+	}
+	return requireTasksExtension(ctx)
+}
+
+func parseTaskInputResponses(raw json.RawMessage) ([]server.InputResponse, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if raw[0] == '[' {
+		var arr []server.InputResponse
+		if err := json.Unmarshal(raw, &arr); err != nil {
+			return nil, err
+		}
+		return arr, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	out := make([]server.InputResponse, 0, len(m))
+	for id, payload := range m {
+		out = append(out, server.InputResponse{ID: id, Payload: payload})
+	}
+	return out, nil
 }
 
 // handleTasksList serves tasks/list with cursor pagination.
@@ -2036,22 +2123,6 @@ func modernTaskBase(t *server.AugTask) map[string]any {
 func modernCreateTaskResult(t *server.AugTask) map[string]any {
 	m := modernTaskBase(t)
 	m[fieldResultType] = protocol.ResultTypeTask
-	return m
-}
-
-// modernGetTaskResult is the DetailedTask for tasks/get, inlining the terminal
-// result or JSON-RPC error. resultType is "complete" (the get itself finished).
-func modernGetTaskResult(t *server.AugTask) map[string]any {
-	m := modernTaskBase(t)
-	result, execErr := t.Outcome()
-	switch t.Status {
-	case server.AugTaskCompleted:
-		if result != nil {
-			m[fieldResult] = result
-		}
-	case server.AugTaskFailed:
-		m[fieldError] = jsonRPCErrorMap(execErr)
-	}
 	return m
 }
 
