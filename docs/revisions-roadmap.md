@@ -34,7 +34,7 @@ There is **no `/v2` Go module path**. Phase 4 shipped on v1 (stateless default i
 | `tasks/update` `inputResponses` | **In library.** A task that needs elicitation/sampling/roots pauses at `input_required` with a keyed `inputRequests` map. `tasks/update` accepts map (or array) `inputResponses`, ignores unknown keys, and replays the handler. TTL refresh via `ttl`/`ttlMs` is still accepted. Modern ack is empty. |
 | `notifications/tasks` | **In library.** `subscriptions/listen` accepts `notifications.taskIds` (requires the tasks extension). Status changes push `notifications/tasks` carrying the same DetailedTask as `tasks/get`. |
 | OpenAPI tool descriptors | **Not in library.** Typed Go handlers remain the registration surface. |
-| Skills extension (SEP-2640) | **In library.** `Skill(path).FromDir` / `SkillsFromDir` serve `skill://` resources and `skill://index.json`; advertise `io.modelcontextprotocol/skills`. Archive / template index entries are deferred. |
+| Skills extension (SEP-2640) | **In library, experimental.** Draft SEP — `Skill(path).FromDir` / `SkillsFromDir` serve `skill://` resources and `skill://index.json`; advertise `io.modelcontextprotocol/skills`. Archive / template index entries deferred. API may change until the SEP is Final. |
 | Roots / Sampling / Logging / HTTP+SSE / `includeContext` thisServer\|allServers | **Deprecated, kept** for the 12-month window. |
 
 Phase 1–3 checkboxes below that are still unmarked were implemented in v1.22–v1.25 (Streamable HTTP, audio, progress `message`, sampling-with-tools, icons, JSON Schema 2020-12, `Implementation.description`, input validation as `isError`). Treat the table above as the live remainder.

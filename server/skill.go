@@ -12,9 +12,13 @@ import (
 	"unicode"
 )
 
-// Skills extension (SEP-2640): serve Agent Skills as ordinary MCP resources
-// under skill://, with an optional skill://index.json catalog. No new RPC
-// methods — resources/list and resources/read are the wire surface.
+// Skills extension (SEP-2640, experimental): serve Agent Skills as ordinary
+// MCP resources under skill://, with an optional skill://index.json catalog.
+// No new RPC methods — resources/list and resources/read are the wire surface.
+//
+// EXPERIMENTAL: SEP-2640 is still a Draft Extensions Track SEP. The API and
+// wire shape may change as the upstream standard settles. Do not rely on
+// stability across minor releases until the SEP reaches Final.
 
 const (
 	// SkillScheme is the conventional URI scheme for MCP-served skills.
@@ -72,6 +76,8 @@ type skillRegistry struct {
 // skill://, e.g. "git-workflow" or "acme/billing/refunds"). Call FromDir to
 // load files from disk. The final path segment MUST match the SKILL.md
 // frontmatter name.
+//
+// Experimental: SEP-2640 is still in definition; see the package comment.
 func (s *Server) Skill(skillPath string) *SkillBuilder {
 	return &SkillBuilder{server: s, skillPath: strings.Trim(skillPath, "/")}
 }
@@ -201,6 +207,8 @@ func (b *SkillBuilder) registerSkillFile(root, rel string, fm SkillFrontmatter) 
 
 // SkillsFromDir registers every immediate subdirectory of root that contains
 // SKILL.md, using the directory name as the skill path.
+//
+// Experimental: SEP-2640 is still in definition; see the package comment.
 func (s *Server) SkillsFromDir(root string) error {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -223,6 +231,8 @@ func (s *Server) SkillsFromDir(root string) error {
 
 // HasSkills reports whether any skill has been registered (advertises
 // io.modelcontextprotocol/skills).
+//
+// Experimental: SEP-2640 is still in definition; see the package comment.
 func (s *Server) HasSkills() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

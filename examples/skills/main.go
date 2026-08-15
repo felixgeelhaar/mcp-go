@@ -1,5 +1,6 @@
-// Package main demonstrates the Skills extension (SEP-2640): Agent Skills
-// served as skill:// resources with an automatic skill://index.json catalog.
+// Package main demonstrates the experimental Skills extension (SEP-2640 Draft):
+// Agent Skills served as skill:// resources with an automatic skill://index.json
+// catalog. The upstream standard is still in definition — expect API churn.
 package main
 
 import (

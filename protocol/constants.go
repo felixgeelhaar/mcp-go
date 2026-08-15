@@ -177,7 +177,7 @@ const (
 const (
 	ExtensionUI     = "io.modelcontextprotocol/ui"     // MCP Apps
 	ExtensionTasks  = "io.modelcontextprotocol/tasks"  // Tasks
-	ExtensionSkills = "io.modelcontextprotocol/skills" // Agent Skills over MCP (SEP-2640)
+	ExtensionSkills = "io.modelcontextprotocol/skills" // Agent Skills over MCP (SEP-2640, experimental)
 )
 
 // ResultType values for polymorphic results (MCP 2026-07-28). An absent
