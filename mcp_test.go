@@ -604,9 +604,17 @@ func TestServeStdio_Initialize_EmptyCapabilities(t *testing.T) {
 		}
 	}
 
-	// Verify capabilities is empty when nothing is registered
-	if len(resp.Result.Capabilities) != 0 {
-		t.Errorf("expected empty capabilities when nothing registered, got: %v", resp.Result.Capabilities)
+	// Bare servers still advertise the always-on MCP Apps extension under
+	// capabilities.extensions (SEP-2133); feature capabilities stay empty.
+	if len(resp.Result.Capabilities) != 1 {
+		t.Errorf("expected only extensions when nothing registered, got: %v", resp.Result.Capabilities)
+	}
+	ext, ok := resp.Result.Capabilities["extensions"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected extensions map, got: %v", resp.Result.Capabilities)
+	}
+	if _, ok := ext[protocol.ExtensionUI]; !ok {
+		t.Errorf("expected %s in extensions, got: %v", protocol.ExtensionUI, ext)
 	}
 }
 

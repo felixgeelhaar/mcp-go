@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Skills extension (SEP-2640).** `Server.Skill(path).FromDir(dir)` and
+  `SkillsFromDir` register Agent Skills as `skill://` resources, generate
+  `skill://index.json`, and advertise `io.modelcontextprotocol/skills` when
+  any skill is registered. `initialize` and `server/discover` both carry
+  `capabilities.extensions`. Client helpers: `ListSkills`, `ReadSkillURI`.
+
 ## [1.26.0](https://github.com/klarlabs-studio/mcp-go/compare/v1.25.0...v1.26.0) - 2026-08-14
 
 ### Changed — MCP spec alignment

@@ -175,8 +175,9 @@ const (
 // Extension identifiers (reverse-DNS) negotiated via capabilities.extensions
 // (MCP 2026-07-28, SEP-2133).
 const (
-	ExtensionUI    = "io.modelcontextprotocol/ui"    // MCP Apps
-	ExtensionTasks = "io.modelcontextprotocol/tasks" // Tasks
+	ExtensionUI     = "io.modelcontextprotocol/ui"     // MCP Apps
+	ExtensionTasks  = "io.modelcontextprotocol/tasks"  // Tasks
+	ExtensionSkills = "io.modelcontextprotocol/skills" // Agent Skills over MCP (SEP-2640)
 )
 
 // ResultType values for polymorphic results (MCP 2026-07-28). An absent
