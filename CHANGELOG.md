@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.27.0](https://github.com/klarlabs-studio/mcp-go/compare/v1.26.0...v1.27.0) - 2026-08-15
+
 ### Added
 
 - **Skills extension (SEP-2640) — experimental.** `Server.Skill(path).FromDir(dir)`

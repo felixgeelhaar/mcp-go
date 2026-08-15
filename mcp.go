@@ -93,13 +93,13 @@ type Option = server.Option
 type ResourceContent = server.ResourceContent
 type ResourceInfo = server.ResourceInfo
 
-// Skills types (SEP-2640)
+// Skills types (SEP-2640, experimental — Draft SEP; API may change)
 type SkillIndex = server.SkillIndex
 type SkillIndexEntry = server.SkillIndexEntry
 type SkillFrontmatter = server.SkillFrontmatter
 type SkillBuilder = server.SkillBuilder
 
-// Skill URI / index constants.
+// Skill URI / index constants (experimental; SEP-2640 Draft).
 const (
 	SkillScheme            = server.SkillScheme
 	SkillEntryPoint        = server.SkillEntryPoint
