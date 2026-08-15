@@ -204,6 +204,7 @@ type Server struct {
 	resourceSubs *resourceSubscriptions
 	taskSubs     *taskSubscriptions
 	resultCache  *resultCacheConfig
+	skills       *skillRegistry
 
 	// regErrs accumulates registration collisions. The fluent builder API
 	// returns the builder rather than an error, so a duplicate tool/resource/

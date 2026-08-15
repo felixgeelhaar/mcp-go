@@ -93,6 +93,25 @@ type Option = server.Option
 type ResourceContent = server.ResourceContent
 type ResourceInfo = server.ResourceInfo
 
+// Skills types (SEP-2640)
+type SkillIndex = server.SkillIndex
+type SkillIndexEntry = server.SkillIndexEntry
+type SkillFrontmatter = server.SkillFrontmatter
+type SkillBuilder = server.SkillBuilder
+
+// Skill URI / index constants.
+const (
+	SkillScheme            = server.SkillScheme
+	SkillEntryPoint        = server.SkillEntryPoint
+	SkillIndexURI          = server.SkillIndexURI
+	SkillIndexSchema       = server.SkillIndexSchema
+	SkillIndexMIME         = server.SkillIndexMIME
+	SkillMarkdownMIME      = server.SkillMarkdownMIME
+	SkillIndexTypeSkillMD  = server.SkillIndexTypeSkillMD
+	SkillIndexTypeArchive  = server.SkillIndexTypeArchive
+	SkillIndexTypeTemplate = server.SkillIndexTypeTemplate
+)
+
 // Prompt types
 type PromptResult = server.PromptResult
 type PromptMessage = server.PromptMessage
@@ -990,6 +1009,7 @@ func (h *requestHandler) handleInitialize(ctx context.Context, req *protocol.Req
 	}
 
 	capabilities := h.serverCapabilities(manifest)
+	capabilities["extensions"] = h.extensionsMap()
 
 	result := map[string]any{
 		fieldProtocolVersion: negotiatedVersion,
@@ -1032,13 +1052,17 @@ func serverInfoMap(manifest server.Manifest, version string) map[string]any {
 
 // extensionsMap advertises the reverse-DNS extensions the server supports in
 // capabilities.extensions (MCP 2026-07-28). MCP Apps is always offered (mcp-go
-// serves ui:// resources); Tasks when any tool opts into augmentation.
+// serves ui:// resources); Tasks when any tool opts into augmentation; Skills
+// when any skill has been registered (SEP-2640).
 func (h *requestHandler) extensionsMap() map[string]any {
 	ext := map[string]any{
 		protocol.ExtensionUI: map[string]any{},
 	}
 	if h.srv.HasTaskTools() {
 		ext[protocol.ExtensionTasks] = map[string]any{}
+	}
+	if h.srv.HasSkills() {
+		ext[protocol.ExtensionSkills] = map[string]any{}
 	}
 	return ext
 }
