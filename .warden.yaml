@@ -7,7 +7,7 @@ hooks: {pre_commit: true, pre_push: true}
 commands:
   fmt: "test -z \"$(gofmt -l .)\""
   vet: "go vet ./..."
-  lint: "golangci-lint run ./..."
+  lint: "golangci-lint run --allow-parallel-runners ./..."
   build: "go build ./..."
   test: "go test -race ./..."
 steps:
