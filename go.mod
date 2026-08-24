@@ -2,6 +2,8 @@ module go.klarlabs.de/mcp
 
 go 1.25.0
 
+toolchain go1.25.14
+
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/gorilla/websocket v1.5.3
